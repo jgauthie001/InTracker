@@ -1,3 +1,5 @@
 node_modules/
 data/transactions.csv
 data/locations/
+data/backups/
+data/hidden_locations.json

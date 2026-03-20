@@ -45,6 +45,21 @@
             <div id="search-bar">
                 <input type="search" id="input-search" placeholder="&#128269; Search part number or description..." />
             </div>
+            <div id="filter-sort-bar">
+                <select id="select-equipment-filter">
+                    <option value="">All Equipment</option>
+                </select>
+                <select id="select-sort">
+                    <option value="default">Order: Default</option>
+                    <option value="pn-asc">Part # A→Z</option>
+                    <option value="pn-desc">Part # Z→A</option>
+                    <option value="qty-asc">Qty Low→High</option>
+                    <option value="qty-desc">Qty High→Low</option>
+                    <option value="desc-asc">Name A→Z</option>
+                    <option value="desc-desc">Name Z→A</option>
+                    <option value="equip-asc">Equipment A→Z</option>
+                </select>
+            </div>
             <div id="parts-list"></div>
             <div id="no-results" class="hidden">No parts match your search.</div>
         </div>

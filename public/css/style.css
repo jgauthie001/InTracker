@@ -132,6 +132,8 @@ h1 {
     pointer-events: none;
 }
 
+#btn-new-location { display: none; }
+
 /* ─── Main Content ───────────────────────────────────────────────────────────── */
 #main-content {
     margin-top: calc(var(--header-h) + var(--locbar-h));
@@ -177,6 +179,26 @@ h1 {
 }
 
 #input-search:focus { border-color: var(--accent); }
+
+#filter-sort-bar {
+    display: flex;
+    gap: 8px;
+    padding: 0 14px 8px;
+}
+
+#filter-sort-bar select {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 0.85rem;
+    padding: 7px 8px;
+    outline: none;
+    min-width: 0;
+}
+
+#filter-sort-bar select:focus { border-color: var(--accent); }
 
 /* ─── Parts List ─────────────────────────────────────────────────────────────── */
 #parts-list {
@@ -269,6 +291,11 @@ h1 {
 
 .btn-add { background: var(--add); color: #fff; }
 .btn-sub { background: var(--sub); color: #fff; }
+
+.part-card.below-par {
+    background: rgba(180, 30, 30, 0.1);
+    border-color: rgba(231, 76, 60, 0.3);
+}
 
 #no-results {
     text-align: center;

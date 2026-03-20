@@ -15,6 +15,8 @@ const DATA_DIR = path.join(__dirname, 'data');
 const LOCATIONS_DIR = path.join(DATA_DIR, 'locations');
 const PARTS_FILE = path.join(DATA_DIR, 'parts.csv');
 const TRANSACTIONS_FILE = path.join(DATA_DIR, 'transactions.csv');
+const HIDDEN_FILE    = path.join(DATA_DIR, 'hidden_locations.json');
+const BACKUPS_DIR    = path.join(DATA_DIR, 'backups');
 
 app.use(cors());
 app.use(express.json());
@@ -73,6 +75,38 @@ async function ensureTransactionsFile() {
     }
 }
 
+async function getHiddenLocations() {
+    try {
+        return JSON.parse(await fsp.readFile(HIDDEN_FILE, 'utf8'));
+    } catch { return []; }
+}
+
+async function addHiddenLocation(name) {
+    const hidden = await getHiddenLocations();
+    if (!hidden.includes(name)) {
+        hidden.push(name);
+        await fsp.writeFile(HIDDEN_FILE, JSON.stringify(hidden), 'utf8');
+    }
+}
+
+async function runDailyBackup() {
+    const today = new Date().toISOString().slice(0, 10);
+    const backupDir = path.join(BACKUPS_DIR, today);
+    try { await fsp.access(backupDir); return; } catch { /* proceed */ }
+    await fsp.mkdir(backupDir, { recursive: true });
+    const filesToBackup = [];
+    try { await fsp.access(PARTS_FILE);        filesToBackup.push(PARTS_FILE);        } catch {}
+    try { await fsp.access(TRANSACTIONS_FILE); filesToBackup.push(TRANSACTIONS_FILE); } catch {}
+    try {
+        const locFiles = await fsp.readdir(LOCATIONS_DIR);
+        locFiles.filter(f => f.endsWith('.csv')).forEach(f => filesToBackup.push(path.join(LOCATIONS_DIR, f)));
+    } catch {}
+    for (const file of filesToBackup) {
+        try { await fsp.copyFile(file, path.join(backupDir, path.basename(file))); } catch {}
+    }
+    console.log(`[InTracker] Backup completed: ${today}`);
+}
+
 // ─── API: Parts ───────────────────────────────────────────────────────────────
 
 app.get('/api/parts', async (req, res) => {
@@ -92,10 +126,23 @@ app.get('/api/locations', async (req, res) => {
     try {
         await fsp.mkdir(LOCATIONS_DIR, { recursive: true });
         const files = await fsp.readdir(LOCATIONS_DIR);
+        const hidden = await getHiddenLocations();
         const locations = files
             .filter(f => f.endsWith('.csv'))
-            .map(f => f.replace('.csv', ''));
+            .map(f => f.replace('.csv', ''))
+            .filter(name => !hidden.includes(name));
         res.json(locations);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/locations/:name/hide', async (req, res) => {
+    try {
+        const safe = req.params.name.replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!safe) return res.status(400).json({ error: 'Invalid location name' });
+        await addHiddenLocation(safe);
+        res.json({ hidden: safe });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -152,15 +199,57 @@ app.get('/api/inventory/:location', async (req, res) => {
         // Join with parts for description and extra fields
         let partsHeaders = [];
         let partsMap = {};
+        let partsPnList = [];
         try {
             const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
             const { headers, rows } = parseCSV(partsText);
             partsHeaders = headers;
             const pnCol = headers.find(h => /part.?num|part.?no|partno|pn\b/i.test(h)) || headers[0];
-            rows.forEach(row => { partsMap[row[pnCol]] = row; });
+            rows.forEach(row => {
+                const pn = row[pnCol];
+                if (pn) { partsMap[pn] = row; partsPnList.push(pn); }
+            });
         } catch { /* no parts file */ }
 
-        const inventory = Object.keys(qtyMap).map(pn => ({
+        let locationDirty = false;
+
+        // Add new parts from parts.csv not yet in this location (at qty 0)
+        for (const pn of partsPnList) {
+            if (!(pn in qtyMap)) {
+                qtyMap[pn] = 0;
+                locationDirty = true;
+            }
+        }
+
+        // Remove parts not in parts.csv that have qty 0 (obsolete zero-stock rows)
+        for (const pn of Object.keys(qtyMap)) {
+            if (!partsMap[pn] && qtyMap[pn] === 0) {
+                delete qtyMap[pn];
+                locationDirty = true;
+            }
+        }
+
+        // Persist the updated location CSV if anything changed
+        if (locationDirty && partsPnList.length > 0) {
+            const updatedRows = partsPnList
+                .filter(pn => pn in qtyMap)
+                .map(pn => ({ part_number: pn, quantity: qtyMap[pn] }));
+            // Also keep any rows not in parts.csv that still have qty (preserve unknown parts with stock)
+            for (const pn of Object.keys(qtyMap)) {
+                if (!partsMap[pn] && qtyMap[pn] > 0) {
+                    updatedRows.push({ part_number: pn, quantity: qtyMap[pn] });
+                }
+            }
+            await fsp.writeFile(locFile, rowsToCSV(['part_number', 'quantity'], updatedRows), 'utf8');
+        }
+
+        // Build response — preserve parts.csv order, unknown-but-stocked parts at end
+        const orderedPns = [
+            ...partsPnList.filter(pn => pn in qtyMap),
+            ...Object.keys(qtyMap).filter(pn => !partsMap[pn])
+        ];
+
+        const inventory = orderedPns.map(pn => ({
             part_number: pn,
             quantity: qtyMap[pn],
             ...(partsMap[pn] || {})
@@ -257,6 +346,9 @@ app.get('/api/transactions', async (req, res) => {
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
+
+runDailyBackup();
+setInterval(runDailyBackup, 60 * 60 * 1000); // re-check every hour
 
 app.listen(PORT, () => {
     console.log(`InTracker running at http://localhost:${PORT}`);

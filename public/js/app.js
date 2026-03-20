@@ -13,7 +13,9 @@ const state = {
     txnPageSize: 30,
     txnTotal: 0,
     txnUserFilter: '',
-    txnPartFilter: ''
+    txnPartFilter: '',
+    equipFilter: '',
+    sortKey: 'default'
 };
 
 // ─── DOM Refs ─────────────────────────────────────────────────────────────────
@@ -29,8 +31,10 @@ const viewInventory   = $('view-inventory');
 const viewTransactions= $('view-transactions');
 const partsList       = $('parts-list');
 const noResults       = $('no-results');
-const inputSearch     = $('input-search');
-const splashText      = $('splash-text');
+const inputSearch          = $('input-search');
+const selectEquipFilter    = $('select-equipment-filter');
+const selectSort           = $('select-sort');
+const splashText           = $('splash-text');
 
 // New location modal
 const modalNewLocation   = $('modal-new-location');
@@ -183,6 +187,7 @@ async function loadInventory() {
         if (!res.ok) { showToast(data.error || 'Failed to load inventory'); showView(viewSplash); return; }
         state.inventory = data.inventory;
         state.partsHeaders = data.partsHeaders;
+        populateEquipmentFilter();
         renderInventory();
     } catch {
         showToast('Failed to load inventory');
@@ -190,19 +195,66 @@ async function loadInventory() {
     }
 }
 
+function populateEquipmentFilter() {
+    const equipSet = new Set();
+    state.inventory.forEach(item => {
+        const e = getEquipment(item);
+        if (e) equipSet.add(e);
+    });
+    const current = selectEquipFilter.value;
+    selectEquipFilter.innerHTML = '<option value="">All Equipment</option>';
+    [...equipSet].sort().forEach(e => {
+        const opt = document.createElement('option');
+        opt.value = e;
+        opt.textContent = e;
+        selectEquipFilter.appendChild(opt);
+    });
+    if (current && equipSet.has(current)) selectEquipFilter.value = current;
+    else state.equipFilter = '';
+}
+
 function getDescription(item) {
-    // Look for a description column flexible to naming
     const descKey = Object.keys(item).find(k => /desc/i.test(k) && k !== 'part_number');
     return descKey ? item[descKey] : '';
 }
 
+function getEquipment(item) {
+    const key = Object.keys(item).find(k => /related_equipment|equipment/i.test(k));
+    return key ? item[key] : '';
+}
+
+function getParLevel(item) {
+    const key = Object.keys(item).find(k => /par_level|parlevel/i.test(k));
+    return key ? parseInt(item[key], 10) || 0 : 0;
+}
+
 function renderInventory(filter = '') {
     const term = filter.toLowerCase().trim();
-    const filtered = term
-        ? state.inventory.filter(item =>
+
+    let filtered = state.inventory.filter(item => {
+        const matchSearch = !term ||
             item.part_number.toLowerCase().includes(term) ||
-            getDescription(item).toLowerCase().includes(term))
-        : state.inventory;
+            getDescription(item).toLowerCase().includes(term) ||
+            getEquipment(item).toLowerCase().includes(term);
+        const matchEquip = !state.equipFilter ||
+            getEquipment(item) === state.equipFilter;
+        return matchSearch && matchEquip;
+    });
+
+    // Sort
+    const s = state.sortKey;
+    if (s !== 'default') {
+        filtered = [...filtered].sort((a, b) => {
+            if (s === 'pn-asc')    return a.part_number.localeCompare(b.part_number);
+            if (s === 'pn-desc')   return b.part_number.localeCompare(a.part_number);
+            if (s === 'qty-asc')   return a.quantity - b.quantity;
+            if (s === 'qty-desc')  return b.quantity - a.quantity;
+            if (s === 'desc-asc')  return getDescription(a).localeCompare(getDescription(b));
+            if (s === 'desc-desc') return getDescription(b).localeCompare(getDescription(a));
+            if (s === 'equip-asc') return getEquipment(a).localeCompare(getEquipment(b));
+            return 0;
+        });
+    }
 
     partsList.innerHTML = '';
     if (filtered.length === 0) {
@@ -215,13 +267,17 @@ function renderInventory(filter = '') {
     filtered.forEach(item => {
         const qty = item.quantity;
         const desc = getDescription(item);
+        const equip = getEquipment(item);
+        const parLevel = getParLevel(item);
+        const belowPar = parLevel > 0 && qty < parLevel;
+        const descLine = desc + (equip ? ` \u2022 ${equip}` : '');
         const disabled = !state.user ? 'disabled' : '';
         const qtyClass = qty === 0 ? 'zero' : qty <= 5 ? 'low' : '';
         const card = document.createElement('div');
-        card.className = 'part-card';
+        card.className = `part-card${belowPar ? ' below-par' : ''}`;
         card.innerHTML = `
             <span class="part-pn">${escapeHtml(item.part_number)}</span>
-            <span class="part-desc">${escapeHtml(desc)}</span>
+            <span class="part-desc">${escapeHtml(descLine)}</span>
             <div class="part-controls">
                 <button class="btn-adj btn-sub" data-pn="${escapeAttr(item.part_number)}" data-action="subtract" ${disabled} title="Subtract">&#8722;</button>
                 <input class="part-qty-input ${qtyClass}" type="number" value="${qty}" min="0" data-pn="${escapeAttr(item.part_number)}" ${disabled} aria-label="Quantity for ${escapeAttr(item.part_number)}">
@@ -233,6 +289,30 @@ function renderInventory(filter = '') {
 }
 
 inputSearch.addEventListener('input', () => renderInventory(inputSearch.value));
+
+selectEquipFilter.addEventListener('change', () => {
+    state.equipFilter = selectEquipFilter.value;
+    renderInventory(inputSearch.value);
+});
+
+selectSort.addEventListener('change', () => {
+    state.sortKey = selectSort.value;
+    renderInventory(inputSearch.value);
+});
+
+// ─── Card Display Update Helper ───────────────────────────────────────────────
+function updateCardDisplay(pn, newQty) {
+    const input = partsList.querySelector(`.part-qty-input[data-pn="${escapeAttr(pn)}"]`);
+    if (!input) return;
+    input.value = newQty;
+    input.className = `part-qty-input ${newQty === 0 ? 'zero' : newQty <= 5 ? 'low' : ''}`;
+    const item = state.inventory.find(i => i.part_number === pn);
+    const card = input.closest('.part-card');
+    if (card && item) {
+        const parLevel = getParLevel(item);
+        card.classList.toggle('below-par', parLevel > 0 && newQty < parLevel);
+    }
+}
 
 // ─── Direct Adjust (+ / - buttons) ───────────────────────────────────────────
 async function sendAdjust(part_number, action, quantity) {
@@ -259,12 +339,7 @@ partsList.addEventListener('click', async e => {
         const { ok, data } = await sendAdjust(pn, action, 1);
         if (!ok) { showToast(data.error || 'Error adjusting quantity', 3000); return; }
         item.quantity = data.quantity;
-        // Update just the input field in the card for speed, then re-colorize
-        const input = partsList.querySelector(`.part-qty-input[data-pn="${escapeAttr(pn)}"]`);
-        if (input) {
-            input.value = data.quantity;
-            input.className = `part-qty-input ${data.quantity === 0 ? 'zero' : data.quantity <= 5 ? 'low' : ''}`;
-        }
+        updateCardDisplay(pn, data.quantity);
         showToast(`${action === 'add' ? '+1' : '-1'} ${pn} → ${data.quantity}`);
     } catch {
         showToast('Server error. Please try again.', 3000);
@@ -299,8 +374,7 @@ partsList.addEventListener('change', async e => {
             return;
         }
         item.quantity = data.quantity;
-        input.value = data.quantity;
-        input.className = `part-qty-input ${data.quantity === 0 ? 'zero' : data.quantity <= 5 ? 'low' : ''}`;
+        updateCardDisplay(pn, data.quantity);
         showToast(`${pn} → ${data.quantity} in stock`);
     } catch {
         showToast('Server error. Please try again.', 3000);
@@ -313,6 +387,31 @@ partsList.addEventListener('change', async e => {
 // Close new-location modal on backdrop click
 modalNewLocation.addEventListener('click', e => {
     if (e.target === modalNewLocation) modalNewLocation.classList.add('hidden');
+});
+
+// ─── Keyboard Shortcuts ───────────────────────────────────────────────────────
+document.addEventListener('keydown', async e => {
+    if (e.ctrlKey && e.key === 'b') {
+        e.preventDefault();
+        if (!state.user.trim()) return;
+        inputNewLocation.value = '';
+        newLocError.classList.add('hidden');
+        modalNewLocation.classList.remove('hidden');
+        setTimeout(() => inputNewLocation.focus(), 100);
+    }
+    if (e.ctrlKey && e.key === 'd') {
+        e.preventDefault();
+        if (!state.location) return;
+        const locToHide = state.location;
+        try {
+            await fetch(`/api/locations/${encodeURIComponent(locToHide)}/hide`, { method: 'POST' });
+        } catch { /* silent */ }
+        state.location = '';
+        selectLocation.value = '';
+        await loadLocations();
+        showView(viewSplash);
+        splashText.textContent = 'Select a location to view inventory.';
+    }
 });
 
 // ─── Transaction Log ──────────────────────────────────────────────────────────
