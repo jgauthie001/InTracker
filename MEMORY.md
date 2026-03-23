@@ -26,6 +26,9 @@ Web-based parts inventory tracker. Node.js + Express backend, vanilla JS fronten
 - Qty display is an editable input — type a new number, blur sends the diff as a transaction
 - Negative stock is blocked server-side (HTTP 400)
 - Part number column auto-detected by regex in parts.csv (flexible column naming)
+- Each part card shows par level in its own column; cards below par get red-tinted background + red left border
+- Sticky column header row labels: Part # / Description | Par | Shed QTY on Hand
+- ⬇ Reorder button downloads reorder_<location>_<date>.csv: part_number, description, quantity_needed (par − qty) for all below-par parts
 
 ## API Routes
 - GET /api/parts
@@ -36,7 +39,6 @@ Web-based parts inventory tracker. Node.js + Express backend, vanilla JS fronten
 - GET /api/transactions  (query: location, part_number, user, from, to, page, pageSize)
 
 ## Future Hooks Already Designed In
-- Low-stock alerts: balance_after in every transaction row, just add threshold check
 - Extra parts.csv columns: partsHeaders in state, getDescription() helper easy to extend
 - Auth: user field in transactions is free-text today, swap for session middleware later
 

@@ -34,6 +34,7 @@ const noResults       = $('no-results');
 const inputSearch          = $('input-search');
 const selectEquipFilter    = $('select-equipment-filter');
 const selectSort           = $('select-sort');
+const btnReorder           = $('btn-reorder');
 const splashText           = $('splash-text');
 
 // New location modal
@@ -278,6 +279,7 @@ function renderInventory(filter = '') {
         card.innerHTML = `
             <span class="part-pn">${escapeHtml(item.part_number)}</span>
             <span class="part-desc">${escapeHtml(descLine)}</span>
+            <span class="part-par"><span class="par-label">Par</span>${parLevel > 0 ? parLevel : '&mdash;'}</span>
             <div class="part-controls">
                 <button class="btn-adj btn-sub" data-pn="${escapeAttr(item.part_number)}" data-action="subtract" ${disabled} title="Subtract">&#8722;</button>
                 <input class="part-qty-input ${qtyClass}" type="number" value="${qty}" min="0" data-pn="${escapeAttr(item.part_number)}" ${disabled} aria-label="Quantity for ${escapeAttr(item.part_number)}">
@@ -387,6 +389,42 @@ partsList.addEventListener('change', async e => {
 // Close new-location modal on backdrop click
 modalNewLocation.addEventListener('click', e => {
     if (e.target === modalNewLocation) modalNewLocation.classList.add('hidden');
+});
+
+// ─── Reorder CSV Download ────────────────────────────────────────────────────
+function csvEscape(val) {
+    const s = String(val ?? '');
+    return s.includes(',') || s.includes('"') || s.includes('\n')
+        ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+btnReorder.addEventListener('click', () => {
+    const belowPar = state.inventory.filter(item => {
+        const p = getParLevel(item);
+        return p > 0 && item.quantity < p;
+    });
+
+    if (belowPar.length === 0) {
+        showToast('No parts are below par level', 3000);
+        return;
+    }
+
+    const lines = ['part_number,description,quantity_needed'];
+    belowPar.forEach(item => {
+        const needed = getParLevel(item) - item.quantity;
+        lines.push([item.part_number, getDescription(item), needed].map(csvEscape).join(','));
+    });
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const loc = state.location ? state.location.replace(/_/g, '-') : 'inventory';
+    const date = new Date().toISOString().slice(0, 10);
+    a.download = `reorder_${loc}_${date}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast(`Reorder list downloaded (${belowPar.length} part${belowPar.length === 1 ? '' : 's'})`);
 });
 
 // ─── Keyboard Shortcuts ───────────────────────────────────────────────────────

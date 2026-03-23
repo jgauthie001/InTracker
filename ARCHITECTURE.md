@@ -139,12 +139,22 @@ Three views toggled via CSS class `.active`:
 3. User taps **+** or **−** → `POST /api/inventory/:location/adjust` with qty 1, card updates in-place (no page reload)
 4. User taps qty number → inline input becomes editable; on blur/Enter the diff is calculated and sent as a single transaction
 5. User taps **Log** → transaction view loads with location pre-filtered
+6. User taps **⬇ Reorder** → browser downloads a CSV of all parts currently below par level
 
 ### Name Requirement
 All adjust buttons and the location selector are disabled until a non-empty name is entered. The name banner is styled in amber until filled, then green. Name persists across sessions via `localStorage`.
 
 ### Negative Stock Prevention
 The server rejects any subtract that would bring qty below 0 (HTTP 400). The UI shows a toast error and snaps the input back to the last known good value.
+
+### Par Level Display
+Each part card displays the par level value from `parts.csv` in a dedicated column between the description and the quantity controls. Cards where `quantity < par_level` (and `par_level > 0`) receive the `.below-par` CSS class: a red-tinted background with a solid red left border.
+
+### Inventory Column Header
+A sticky header row (`#parts-list-header`) sits above the parts list and labels the three columns: **Part # / Description**, **Par**, and **Shed QTY on Hand**. Column widths match the card grid exactly.
+
+### Reorder CSV Export
+The **⬇ Reorder** button (next to the sort controls) computes `quantity_needed = par_level − quantity` for every part below par and downloads a CSV named `reorder_<location>_<YYYY-MM-DD>.csv` with columns `part_number, description, quantity_needed`. A toast is shown if no parts are currently below par.
 
 ---
 
@@ -179,7 +189,7 @@ Server runs on port `3030`. Users on the same network connect via `http://<machi
 `partsHeaders` is already available in state. The `getDescription()` helper in `app.js` can be extended to expose additional fields per card.
 
 ### Adding low-stock alerts
-`balance_after` is logged in every transaction. A threshold check can be added to the `/api/inventory/:location/adjust` endpoint and surfaced as a response flag without restructuring any data.
+Par-level tracking is already implemented in the UI (below-par card highlighting and Reorder CSV export). A server-side threshold check could optionally be added to `/api/inventory/:location/adjust` to return a flag in the response without restructuring any data.
 
 ### Adding authentication
 The `user` field in transactions is currently free-text. A session cookie or basic auth middleware can be dropped in front of Express with minimal changes to the existing code.
