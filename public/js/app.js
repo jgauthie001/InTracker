@@ -15,7 +15,9 @@ const state = {
     txnUserFilter: '',
     txnPartFilter: '',
     equipFilter: '',
-    sortKey: 'default'
+    sortKey: 'default',
+    truckLocation: '',
+    isTruckMode: false
 };
 
 // ─── DOM Refs ─────────────────────────────────────────────────────────────────
@@ -36,6 +38,17 @@ const selectEquipFilter    = $('select-equipment-filter');
 const selectSort           = $('select-sort');
 const btnReorder           = $('btn-reorder');
 const splashText           = $('splash-text');
+const btnTruckStock        = $('btn-truck-stock');
+const inputOrdersCsv       = $('input-orders-csv');
+
+// Transfer modal
+const modalTransfer         = $('modal-transfer');
+const transferPnDisplay     = $('transfer-pn-display');
+const selectTransferLoc     = $('select-transfer-location');
+const inputTransferQty      = $('input-transfer-qty');
+const transferError         = $('transfer-error');
+const btnTransferConfirm    = $('btn-transfer-confirm');
+const btnTransferCancel     = $('btn-transfer-cancel');
 
 // New location modal
 const modalNewLocation   = $('modal-new-location');
@@ -52,6 +65,17 @@ const txnSearchPart    = $('txn-search-part');
 const btnBack          = $('btn-back');
 
 const toast            = $('toast');
+
+// ─── Active location helper ────────────────────────────────────────────────────
+function activeLocation() {
+    return state.isTruckMode ? state.truckLocation : state.location;
+}
+
+// ─── Parts list header text ──────────────────────────────────────────────────
+function updatePartsListHeader() {
+    const spans = document.querySelectorAll('#parts-list-header span');
+    if (spans[3]) spans[3].textContent = state.isTruckMode ? 'Truck QTY' : 'Shed QTY on Hand';
+}
 
 // ─── Header height recalculation ──────────────────────────────────────────────
 function updateHeaderHeight() {
@@ -84,6 +108,7 @@ function applyUserState() {
         selectLocation.disabled = false;
         btnNewLocation.disabled = false;
         btnTransactions.disabled = false;
+        btnTruckStock.disabled = false;
         if (!state.location) {
             splashText.textContent = 'Select a location to view inventory.';
         }
@@ -94,6 +119,14 @@ function applyUserState() {
         selectLocation.disabled = true;
         btnNewLocation.disabled = true;
         btnTransactions.disabled = true;
+        btnTruckStock.disabled = true;
+        if (state.isTruckMode) {
+            state.isTruckMode = false;
+            state.truckLocation = '';
+            btnTruckStock.classList.remove('active');
+            $('truck-mode-banner').classList.add('hidden');
+            updatePartsListHeader();
+        }
         splashText.textContent = 'Enter your name above to get started.';
         showView(viewSplash);
         state.location = '';
@@ -127,6 +160,14 @@ async function loadLocations() {
 }
 
 selectLocation.addEventListener('change', () => {
+    // Selecting a real location exits truck mode
+    if (state.isTruckMode) {
+        state.isTruckMode = false;
+        state.truckLocation = '';
+        btnTruckStock.classList.remove('active');
+        $('truck-mode-banner').classList.add('hidden');
+        updatePartsListHeader();
+    }
     state.location = selectLocation.value;
     if (state.location) {
         loadInventory();
@@ -182,8 +223,9 @@ inputNewLocation.addEventListener('keydown', e => { if (e.key === 'Enter') btnNe
 async function loadInventory() {
     partsList.innerHTML = '<div class="splash-message"><div class="splash-icon">&#8635;</div><p>Loading...</p></div>';
     showView(viewInventory);
+    const locationToLoad = activeLocation();
     try {
-        const res = await fetch(`/api/inventory/${encodeURIComponent(state.location)}`);
+        const res = await fetch(`/api/inventory/${encodeURIComponent(locationToLoad)}`);
         const data = await res.json();
         if (!res.ok) { showToast(data.error || 'Failed to load inventory'); showView(viewSplash); return; }
         state.inventory = data.inventory;
@@ -270,21 +312,30 @@ function renderInventory(filter = '') {
         const desc = getDescription(item);
         const equip = getEquipment(item);
         const parLevel = getParLevel(item);
-        const belowPar = parLevel > 0 && qty < parLevel;
+        const onOrder = item.on_order || 0;
+        const belowPar = !state.isTruckMode && parLevel > 0 && qty < parLevel;
         const descLine = desc + (equip ? ` \u2022 ${equip}` : '');
         const disabled = !state.user ? 'disabled' : '';
         const qtyClass = qty === 0 ? 'zero' : qty <= 5 ? 'low' : '';
+        const orderClass = onOrder > 0 ? ' has-order' : '';
+        const parDisplay = (!state.isTruckMode && parLevel > 0) ? parLevel : '&mdash;';
         const card = document.createElement('div');
         card.className = `part-card${belowPar ? ' below-par' : ''}`;
         card.innerHTML = `
             <span class="part-pn">${escapeHtml(item.part_number)}</span>
             <span class="part-desc">${escapeHtml(descLine)}</span>
-            <span class="part-par"><span class="par-label">Par</span>${parLevel > 0 ? parLevel : '&mdash;'}</span>
+            <span class="part-par"><span class="par-label">Par</span>${parDisplay}</span>
+            <span class="part-order${orderClass}" data-pn="${escapeAttr(item.part_number)}">
+                <span class="order-label">On Ord</span>
+                ${onOrder > 0 ? onOrder : '&mdash;'}
+                ${onOrder > 0 ? `<button class="btn-receive" data-pn="${escapeAttr(item.part_number)}" ${disabled} title="Receive ${onOrder} unit(s) into current location">&#10003; Rcv</button>` : ''}
+            </span>
             <div class="part-controls">
                 <button class="btn-adj btn-sub" data-pn="${escapeAttr(item.part_number)}" data-action="subtract" ${disabled} title="Subtract">&#8722;</button>
                 <input class="part-qty-input ${qtyClass}" type="number" value="${qty}" min="0" data-pn="${escapeAttr(item.part_number)}" ${disabled} aria-label="Quantity for ${escapeAttr(item.part_number)}">
                 <button class="btn-adj btn-add" data-pn="${escapeAttr(item.part_number)}" data-action="add" ${disabled} title="Add">&#43;</button>
-            </div>`;
+            </div>
+            ${state.isTruckMode ? `<div class="truck-transfer-bar"><button class="btn-transfer" data-pn="${escapeAttr(item.part_number)}" ${disabled} title="Transfer to/from a location">&#8644; Transfer</button></div>` : ''}`;
         frag.appendChild(card);
     });
     partsList.appendChild(frag);
@@ -312,13 +363,13 @@ function updateCardDisplay(pn, newQty) {
     const card = input.closest('.part-card');
     if (card && item) {
         const parLevel = getParLevel(item);
-        card.classList.toggle('below-par', parLevel > 0 && newQty < parLevel);
+        card.classList.toggle('below-par', !state.isTruckMode && parLevel > 0 && newQty < parLevel);
     }
 }
 
 // ─── Direct Adjust (+ / - buttons) ───────────────────────────────────────────
 async function sendAdjust(part_number, action, quantity) {
-    const res = await fetch(`/api/inventory/${encodeURIComponent(state.location)}/adjust`, {
+    const res = await fetch(`/api/inventory/${encodeURIComponent(activeLocation())}/adjust`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ part_number, action, quantity, user: state.user.trim() })
@@ -327,6 +378,14 @@ async function sendAdjust(part_number, action, quantity) {
 }
 
 partsList.addEventListener('click', async e => {
+    // Receive button
+    const rcvBtn = e.target.closest('.btn-receive');
+    if (rcvBtn) { await handleReceive(rcvBtn.dataset.pn, rcvBtn); return; }
+
+    // Transfer button
+    const tfBtn = e.target.closest('.btn-transfer');
+    if (tfBtn) { openTransferModal(tfBtn.dataset.pn); return; }
+
     const btn = e.target.closest('.btn-adj');
     if (!btn) return;
     if (!state.user.trim()) { showToast('Please enter your name first'); return; }
@@ -427,6 +486,155 @@ btnReorder.addEventListener('click', () => {
     showToast(`Reorder list downloaded (${belowPar.length} part${belowPar.length === 1 ? '' : 's'})`);
 });
 
+// ─── Receive on-order item ────────────────────────────────────────────────────
+async function handleReceive(pn, btn) {
+    if (!state.user.trim()) { showToast('Please enter your name first'); return; }
+    const loc = activeLocation();
+    if (!loc) { showToast('Select a location first'); return; }
+
+    btn.disabled = true;
+    try {
+        const res = await fetch(`/api/orders/${encodeURIComponent(pn)}/receive`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ location: loc, user: state.user.trim() })
+        });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Receive failed', 3000); return; }
+
+        const item = state.inventory.find(i => i.part_number === pn);
+        if (item) { item.quantity = data.quantity; item.on_order = 0; }
+        showToast(`Received ${data.received} \xd7 ${pn} \u2192 qty now ${data.quantity}`);
+        renderInventory(inputSearch.value);
+    } catch {
+        showToast('Server error during receive', 3000);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// ─── Upload Orders CSV ────────────────────────────────────────────────────────
+inputOrdersCsv.addEventListener('change', () => {
+    const file = inputOrdersCsv.files[0];
+    if (!file) return;
+    inputOrdersCsv.value = '';
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+        const csv = e.target.result;
+        try {
+            const res = await fetch('/api/orders/upload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ csv })
+            });
+            const data = await res.json();
+            if (!res.ok) { showToast(data.error || 'Upload failed', 3000); return; }
+            showToast(`PO uploaded: ${data.merged} line${data.merged === 1 ? '' : 's'} added`);
+            if (activeLocation()) await loadInventory();
+        } catch {
+            showToast('Upload failed \u2014 server error', 3000);
+        }
+    };
+    reader.readAsText(file);
+});
+
+// ─── Truck Stock ──────────────────────────────────────────────────────────────
+btnTruckStock.addEventListener('click', async () => {
+    if (!state.user.trim()) { showToast('Please enter your name first'); return; }
+
+    if (state.isTruckMode) {
+        state.isTruckMode = false;
+        state.truckLocation = '';
+        btnTruckStock.classList.remove('active');
+        $('truck-mode-banner').classList.add('hidden');
+        updatePartsListHeader();
+        if (state.location) { loadInventory(); }
+        else { showView(viewSplash); splashText.textContent = 'Select a location to view inventory.'; }
+        return;
+    }
+
+    btnTruckStock.disabled = true;
+    try {
+        const res = await fetch(`/api/truck/${encodeURIComponent(state.user.trim())}`);
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Failed to load truck stock'); return; }
+
+        state.truckLocation = data.location;
+        state.isTruckMode = true;
+        btnTruckStock.classList.add('active');
+        $('truck-mode-name').textContent = state.user.trim();
+        $('truck-mode-banner').classList.remove('hidden');
+        updatePartsListHeader();
+        await loadInventory();
+        if (data.created) showToast('Truck stock created for ' + state.user.trim());
+    } catch {
+        showToast('Server error loading truck stock');
+    } finally {
+        btnTruckStock.disabled = false;
+    }
+});
+
+// ─── Transfer Modal ───────────────────────────────────────────────────────────
+let _transferPn = '';
+
+function openTransferModal(pn) {
+    _transferPn = pn;
+    const item = state.inventory.find(i => i.part_number === pn);
+    const desc = item ? getDescription(item) : '';
+    transferPnDisplay.textContent = pn + (desc ? ' \u2014 ' + desc : '');
+
+    selectTransferLoc.innerHTML = '<option value="">\u2014 Select Location \u2014</option>';
+    fetch('/api/locations').then(r => r.json()).then(locs => {
+        locs.sort().forEach(loc => {
+            const opt = document.createElement('option');
+            opt.value = loc;
+            opt.textContent = loc.replace(/_/g, ' ');
+            selectTransferLoc.appendChild(opt);
+        });
+    }).catch(() => showToast('Could not load locations'));
+
+    inputTransferQty.value = '1';
+    transferError.classList.add('hidden');
+    document.getElementById('transfer-dir-out').checked = true;
+    modalTransfer.classList.remove('hidden');
+}
+
+btnTransferCancel.addEventListener('click', () => { modalTransfer.classList.add('hidden'); });
+modalTransfer.addEventListener('click', e => { if (e.target === modalTransfer) modalTransfer.classList.add('hidden'); });
+
+btnTransferConfirm.addEventListener('click', async () => {
+    const toLoc = selectTransferLoc.value;
+    if (!toLoc) { transferError.textContent = 'Please select a location.'; transferError.classList.remove('hidden'); return; }
+    const qty = parseInt(inputTransferQty.value, 10);
+    if (isNaN(qty) || qty <= 0) { transferError.textContent = 'Quantity must be a positive number.'; transferError.classList.remove('hidden'); return; }
+
+    const dir     = document.querySelector('input[name="transfer-dir"]:checked').value;
+    const fromLoc = dir === 'truck-to-loc' ? state.truckLocation : toLoc;
+    const destLoc = dir === 'truck-to-loc' ? toLoc : state.truckLocation;
+
+    btnTransferConfirm.disabled = true;
+    transferError.classList.add('hidden');
+    try {
+        const res = await fetch('/api/transfer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from_location: fromLoc, to_location: destLoc, part_number: _transferPn, quantity: qty, user: state.user.trim() })
+        });
+        const data = await res.json();
+        if (!res.ok) { transferError.textContent = data.error; transferError.classList.remove('hidden'); return; }
+
+        modalTransfer.classList.add('hidden');
+        showToast(`Transferred ${qty} \xd7 ${_transferPn}`);
+        await loadInventory();
+    } catch {
+        transferError.textContent = 'Server error. Please try again.';
+        transferError.classList.remove('hidden');
+    } finally {
+        btnTransferConfirm.disabled = false;
+    }
+});
+
 // ─── Keyboard Shortcuts ───────────────────────────────────────────────────────
 document.addEventListener('keydown', async e => {
     if (e.ctrlKey && e.key === 'b') {
@@ -490,7 +698,7 @@ async function loadTransactions() {
         pageSize: state.txnPageSize,
         ...(state.txnUserFilter && { user: state.txnUserFilter }),
         ...(state.txnPartFilter && { part_number: state.txnPartFilter }),
-        ...(state.location && { location: state.location })
+        ...(activeLocation() && { location: activeLocation() })
     });
     try {
         const res = await fetch(`/api/transactions?${params}`);
@@ -514,9 +722,12 @@ function renderTransactions(rows) {
         const d = document.createElement('div');
         d.className = 'txn-row';
         const ts = row.timestamp ? new Date(row.timestamp).toLocaleString() : '';
+        const badgePrefix = row.action === 'add' ? '+' : row.action === 'subtract' ? '-' :
+            row.action === 'receive' ? '\u2713' : row.action === 'transfer-in' ? '\u2192' :
+            row.action === 'transfer-out' ? '\u2190' : '';
         d.innerHTML = `
             <span class="txn-main">${escapeHtml(row.part_number)} &mdash; ${escapeHtml(row.location.replace(/_/g, ' '))}</span>
-            <span class="txn-badge ${row.action}">${row.action === 'add' ? '+' : '-'}${escapeHtml(row.quantity)}</span>
+            <span class="txn-badge ${row.action}">${badgePrefix}${escapeHtml(row.quantity)}</span>
             <span class="txn-meta">${escapeHtml(ts)} &bull; ${escapeHtml(row.user)} &bull; Balance: ${escapeHtml(row.balance_after)}</span>`;
         frag.appendChild(d);
     });

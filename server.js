@@ -19,6 +19,7 @@ const PARTS_FILE = path.join(DATA_DIR, 'parts.csv');
 const TRANSACTIONS_FILE = path.join(DATA_DIR, 'transactions.csv');
 const HIDDEN_FILE    = path.join(DATA_DIR, 'hidden_locations.json');
 const BACKUPS_DIR    = path.join(DATA_DIR, 'backups');
+const ORDERS_FILE    = path.join(DATA_DIR, 'orders.csv');
 
 app.use(cors());
 app.use(express.json());
@@ -77,6 +78,14 @@ async function ensureTransactionsFile() {
     }
 }
 
+async function ensureOrdersFile() {
+    try {
+        await fsp.access(ORDERS_FILE);
+    } catch {
+        await fsp.writeFile(ORDERS_FILE, 'part_number,quantity_on_order\n', 'utf8');
+    }
+}
+
 async function getHiddenLocations() {
     try {
         return JSON.parse(await fsp.readFile(HIDDEN_FILE, 'utf8'));
@@ -132,7 +141,7 @@ app.get('/api/locations', async (req, res) => {
         const locations = files
             .filter(f => f.endsWith('.csv'))
             .map(f => f.replace('.csv', ''))
-            .filter(name => !hidden.includes(name));
+            .filter(name => !hidden.includes(name) && !name.startsWith('truck_'));
         res.json(locations);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -251,9 +260,19 @@ app.get('/api/inventory/:location', async (req, res) => {
             ...Object.keys(qtyMap).filter(pn => !partsMap[pn])
         ];
 
+        // Load on-order quantities
+        let ordersMap = {};
+        try {
+            await ensureOrdersFile();
+            const ordersText = await fsp.readFile(ORDERS_FILE, 'utf8');
+            const { rows: orderRows } = parseCSV(ordersText);
+            orderRows.forEach(r => { ordersMap[r.part_number] = parseInt(r.quantity_on_order, 10) || 0; });
+        } catch { /* no orders file yet */ }
+
         const inventory = orderedPns.map(pn => ({
             part_number: pn,
             quantity: qtyMap[pn],
+            on_order: ordersMap[pn] || 0,
             ...(partsMap[pn] || {})
         }));
 
@@ -343,6 +362,231 @@ app.get('/api/transactions', async (req, res) => {
 
         res.json({ total, page, pageSize, rows: paged });
     } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ─── API: Orders ─────────────────────────────────────────────────────────────
+
+// GET /api/orders — returns { part_number: qty_on_order } map
+app.get('/api/orders', async (req, res) => {
+    try {
+        await ensureOrdersFile();
+        const text = await fsp.readFile(ORDERS_FILE, 'utf8');
+        const { rows } = parseCSV(text);
+        const orders = {};
+        rows.forEach(r => {
+            const qty = parseInt(r.quantity_on_order, 10) || 0;
+            if (qty > 0) orders[r.part_number] = qty;
+        });
+        res.json(orders);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/orders/upload — body: { csv: "..." } — merges (adds) quantities
+app.post('/api/orders/upload', async (req, res) => {
+    try {
+        const { csv } = req.body;
+        if (!csv || typeof csv !== 'string') return res.status(400).json({ error: 'CSV content required' });
+
+        const { headers, rows } = parseCSV(csv);
+        const pnCol  = headers.find(h => /part.?num|part.?no|partno|\bpn\b/i.test(h)) || headers[0];
+        const qtyCol = headers.find(h => /qty|quantity/i.test(h) && h !== pnCol) || headers[1];
+        if (!pnCol || !qtyCol) return res.status(400).json({ error: 'Could not detect part_number and quantity columns' });
+
+        await ensureOrdersFile();
+        const existingText = await fsp.readFile(ORDERS_FILE, 'utf8');
+        const { rows: existingRows } = parseCSV(existingText);
+        const orderMap = {};
+        existingRows.forEach(r => { orderMap[r.part_number] = parseInt(r.quantity_on_order, 10) || 0; });
+
+        let added = 0;
+        rows.forEach(row => {
+            const pn  = (row[pnCol]  || '').trim();
+            const qty = parseInt(row[qtyCol], 10) || 0;
+            if (pn && qty > 0) { orderMap[pn] = (orderMap[pn] || 0) + qty; added++; }
+        });
+
+        const newRows = Object.entries(orderMap)
+            .filter(([, q]) => q > 0)
+            .map(([pn, q]) => ({ part_number: pn, quantity_on_order: q }));
+        await fsp.writeFile(ORDERS_FILE, rowsToCSV(['part_number', 'quantity_on_order'], newRows), 'utf8');
+        res.json({ merged: added, total: newRows.length });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// PUT /api/orders/:partNumber — manually set on-order quantity
+app.put('/api/orders/:partNumber', async (req, res) => {
+    try {
+        const pn  = req.params.partNumber;
+        const qty = parseInt(req.body.quantity_on_order, 10);
+        if (isNaN(qty) || qty < 0) return res.status(400).json({ error: 'quantity_on_order must be >= 0' });
+
+        await ensureOrdersFile();
+        const text = await fsp.readFile(ORDERS_FILE, 'utf8');
+        const { rows } = parseCSV(text);
+        const orderMap = {};
+        rows.forEach(r => { orderMap[r.part_number] = parseInt(r.quantity_on_order, 10) || 0; });
+        orderMap[pn] = qty;
+
+        const newRows = Object.entries(orderMap)
+            .filter(([, q]) => q > 0)
+            .map(([p, q]) => ({ part_number: p, quantity_on_order: q }));
+        await fsp.writeFile(ORDERS_FILE, rowsToCSV(['part_number', 'quantity_on_order'], newRows), 'utf8');
+        res.json({ part_number: pn, quantity_on_order: qty });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/orders/:partNumber/receive — add on-order qty to location, zero the order
+app.post('/api/orders/:partNumber/receive', async (req, res) => {
+    try {
+        const pn = req.params.partNumber;
+        const { location, user } = req.body;
+        if (!location)             return res.status(400).json({ error: 'Location required' });
+        if (!user || !user.trim()) return res.status(400).json({ error: 'User required' });
+
+        const safe = location.replace(/[^a-zA-Z0-9_\-]/g, '');
+
+        await ensureOrdersFile();
+        const ordersText = await fsp.readFile(ORDERS_FILE, 'utf8');
+        const { rows: orderRows } = parseCSV(ordersText);
+        const orderMap = {};
+        orderRows.forEach(r => { orderMap[r.part_number] = parseInt(r.quantity_on_order, 10) || 0; });
+
+        const onOrderQty = orderMap[pn] || 0;
+        if (onOrderQty === 0) return res.status(400).json({ error: 'No quantity on order for this part' });
+
+        const locFile = path.join(LOCATIONS_DIR, `${safe}.csv`);
+        const invText = await fsp.readFile(locFile, 'utf8');
+        const { headers, rows } = parseCSV(invText);
+
+        const rowIdx = rows.findIndex(r => r.part_number === pn);
+        if (rowIdx === -1) return res.status(404).json({ error: 'Part not found in this location' });
+
+        const current = parseInt(rows[rowIdx].quantity, 10) || 0;
+        const newQty  = current + onOrderQty;
+        rows[rowIdx].quantity = newQty;
+        await fsp.writeFile(locFile, rowsToCSV(headers.length ? headers : ['part_number', 'quantity'], rows), 'utf8');
+
+        orderMap[pn] = 0;
+        const newOrderRows = Object.entries(orderMap)
+            .filter(([, q]) => q > 0)
+            .map(([p, q]) => ({ part_number: p, quantity_on_order: q }));
+        await fsp.writeFile(ORDERS_FILE, rowsToCSV(['part_number', 'quantity_on_order'], newOrderRows), 'utf8');
+
+        await ensureTransactionsFile();
+        const ts = new Date().toISOString();
+        await fsp.appendFile(TRANSACTIONS_FILE,
+            `\n${ts},${escapeCSVField(user.trim())},${escapeCSVField(safe)},${escapeCSVField(pn)},receive,${onOrderQty},${newQty}`,
+            'utf8');
+
+        res.json({ part_number: pn, quantity: newQty, quantity_on_order: 0, received: onOrderQty });
+    } catch (err) {
+        if (err.code === 'ENOENT') return res.status(404).json({ error: 'Location not found' });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ─── API: Truck Stock ─────────────────────────────────────────────────────────
+
+// GET /api/truck/:username — returns truck location name, auto-creates if needed
+app.get('/api/truck/:username', async (req, res) => {
+    try {
+        const rawName = req.params.username.trim();
+        if (!rawName) return res.status(400).json({ error: 'Username required' });
+
+        const safe = ('truck_' + rawName.replace(/[^a-zA-Z0-9]/g, '_')).replace(/_+/g, '_');
+        const locFile = path.join(LOCATIONS_DIR, `${safe}.csv`);
+
+        let created = false;
+        try {
+            await fsp.access(locFile);
+        } catch {
+            let csvContent = 'part_number,quantity\n';
+            try {
+                const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
+                const { headers, rows } = parseCSV(partsText);
+                const pnCol = headers.find(h => /part.?num|part.?no|partno|\bpn\b/i.test(h)) || headers[0];
+                rows.forEach(row => { const pn = row[pnCol] || ''; if (pn) csvContent += `${pn},0\n`; });
+            } catch {}
+            await fsp.writeFile(locFile, csvContent, 'utf8');
+            created = true;
+        }
+
+        res.json({ location: safe, created });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ─── API: Transfer ────────────────────────────────────────────────────────────
+
+// POST /api/transfer — move qty between two locations
+app.post('/api/transfer', async (req, res) => {
+    try {
+        const { from_location, to_location, part_number, quantity, user } = req.body;
+        if (!user || !user.trim())              return res.status(400).json({ error: 'User required' });
+        if (!from_location || !to_location)     return res.status(400).json({ error: 'from_location and to_location required' });
+        if (from_location === to_location)       return res.status(400).json({ error: 'Source and destination must differ' });
+        if (!part_number)                       return res.status(400).json({ error: 'Part number required' });
+        const qty = parseInt(quantity, 10);
+        if (isNaN(qty) || qty <= 0)             return res.status(400).json({ error: 'Quantity must be a positive integer' });
+
+        const safeFrom = from_location.replace(/[^a-zA-Z0-9_\-]/g, '');
+        const safeTo   = to_location.replace(/[^a-zA-Z0-9_\-]/g, '');
+
+        const fromFile = path.join(LOCATIONS_DIR, `${safeFrom}.csv`);
+        const toFile   = path.join(LOCATIONS_DIR, `${safeTo}.csv`);
+
+        const fromText = await fsp.readFile(fromFile, 'utf8');
+        const { headers: fromHeaders, rows: fromRows } = parseCSV(fromText);
+        const toText = await fsp.readFile(toFile, 'utf8');
+        const { headers: toHeaders, rows: toRows } = parseCSV(toText);
+
+        const fromIdx = fromRows.findIndex(r => r.part_number === part_number);
+        if (fromIdx === -1) return res.status(404).json({ error: 'Part not found in source location' });
+
+        const fromCurrent = parseInt(fromRows[fromIdx].quantity, 10) || 0;
+        if (fromCurrent < qty) return res.status(400).json({ error: `Cannot transfer ${qty}: source only has ${fromCurrent}` });
+
+        const newFromQty = fromCurrent - qty;
+        fromRows[fromIdx].quantity = newFromQty;
+
+        const toIdx = toRows.findIndex(r => r.part_number === part_number);
+        let newToQty;
+        if (toIdx >= 0) {
+            newToQty = (parseInt(toRows[toIdx].quantity, 10) || 0) + qty;
+            toRows[toIdx].quantity = newToQty;
+        } else {
+            newToQty = qty;
+            toRows.push({ part_number, quantity: newToQty });
+        }
+
+        await fsp.writeFile(fromFile, rowsToCSV(fromHeaders.length ? fromHeaders : ['part_number', 'quantity'], fromRows), 'utf8');
+        await fsp.writeFile(toFile,   rowsToCSV(toHeaders.length   ? toHeaders   : ['part_number', 'quantity'], toRows),   'utf8');
+
+        await ensureTransactionsFile();
+        const ts = new Date().toISOString();
+        const u  = escapeCSVField(user.trim());
+        const pn = escapeCSVField(part_number);
+        await fsp.appendFile(TRANSACTIONS_FILE,
+            `\n${ts},${u},${escapeCSVField(safeFrom)},${pn},transfer-out,${qty},${newFromQty}` +
+            `\n${ts},${u},${escapeCSVField(safeTo)},${pn},transfer-in,${qty},${newToQty}`,
+            'utf8');
+
+        res.json({
+            part_number,
+            from: { location: safeFrom, quantity: newFromQty },
+            to:   { location: safeTo,   quantity: newToQty }
+        });
+    } catch (err) {
+        if (err.code === 'ENOENT') return res.status(404).json({ error: 'Location not found' });
         res.status(500).json({ error: err.message });
     }
 });

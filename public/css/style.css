@@ -214,10 +214,26 @@ h1 {
 }
 .btn-reorder:active { opacity: 0.8; }
 
+.btn-upload-orders {
+    flex: 0 0 auto;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    font-weight: 700;
+    padding: 7px 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+}
+.btn-upload-orders:active { opacity: 0.8; }
+
 /* ─── Column Header ──────────────────────────────────────────────────────────── */
 #parts-list-header {
     display: grid;
-    grid-template-columns: 1fr 52px 140px;
+    grid-template-columns: 1fr 52px 52px 140px;
     column-gap: 10px;
     padding: 4px 26px 6px;
     font-size: 0.68rem;
@@ -230,7 +246,8 @@ h1 {
 }
 
 #parts-list-header span:nth-child(2),
-#parts-list-header span:nth-child(3) {
+#parts-list-header span:nth-child(3),
+#parts-list-header span:nth-child(4) {
     text-align: center;
 }
 
@@ -247,7 +264,7 @@ h1 {
     border: 1px solid var(--border);
     border-radius: var(--radius);
     display: grid;
-    grid-template-columns: 1fr 52px auto;
+    grid-template-columns: 1fr 52px 52px auto;
     grid-template-rows: auto auto;
     align-items: center;
     padding: 10px 12px;
@@ -298,8 +315,51 @@ h1 {
     margin-bottom: 1px;
 }
 
-.part-controls {
+.part-order {
     grid-column: 3;
+    grid-row: 1 / span 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-width: 52px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--text-dim);
+    text-align: center;
+    line-height: 1.2;
+    gap: 3px;
+}
+
+.part-order .order-label {
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 400;
+    margin-bottom: 1px;
+}
+
+.part-order.has-order {
+    color: var(--warn);
+}
+
+.btn-receive {
+    font-size: 0.6rem;
+    font-weight: 700;
+    background: rgba(39,174,96,0.2);
+    color: var(--add);
+    border: 1px solid var(--add);
+    border-radius: 4px;
+    padding: 2px 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    line-height: 1.3;
+}
+.btn-receive:active  { opacity: 0.7; }
+.btn-receive:disabled { opacity: 0.4; pointer-events: none; }
+
+.part-controls {
+    grid-column: 4;
     grid-row: 1 / span 2;
     display: flex;
     align-items: center;
@@ -354,6 +414,28 @@ h1 {
     border-color: rgba(231, 76, 60, 0.6);
     border-left: 3px solid var(--sub);
 }
+
+.truck-transfer-bar {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    display: flex;
+    padding-top: 6px;
+    border-top: 1px solid var(--border);
+    margin-top: 2px;
+}
+
+.btn-transfer {
+    flex: 1;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 0.82rem;
+    padding: 6px 10px;
+    cursor: pointer;
+}
+.btn-transfer:active  { opacity: 0.7; }
+.btn-transfer:disabled { opacity: 0.3; pointer-events: none; }
 
 #no-results {
     text-align: center;
@@ -420,8 +502,11 @@ h1 {
     align-self: start;
 }
 
-.txn-badge.add { background: rgba(39,174,96,0.2); color: var(--add); }
-.txn-badge.subtract { background: rgba(231,76,60,0.2); color: var(--sub); }
+.txn-badge.add          { background: rgba(39,174,96,0.2);  color: var(--add); }
+.txn-badge.subtract     { background: rgba(231,76,60,0.2);  color: var(--sub); }
+.txn-badge.receive      { background: rgba(79,142,247,0.2); color: var(--accent); }
+.txn-badge.transfer-in  { background: rgba(39,174,96,0.15); color: var(--add); }
+.txn-badge.transfer-out { background: rgba(231,76,60,0.1);  color: var(--sub); }
 
 .txn-meta {
     color: var(--text-dim);
@@ -573,7 +658,14 @@ h1 {
 }
 
 .btn-icon:disabled { opacity: 0.3; pointer-events: none; }
-.btn-icon:active { opacity: 0.7; }
+.btn-icon:active   { opacity: 0.7; }
+.btn-icon.active   { color: var(--accent); border-color: var(--accent); }
+
+.header-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
 
 /* ─── Toast ──────────────────────────────────────────────────────────────────── */
 .toast {
@@ -596,6 +688,63 @@ h1 {
 .toast.hidden { opacity: 0; }
 
 .hidden { display: none !important; }
+
+#truck-mode-banner {
+    background: rgba(79,142,247,0.12);
+    border-bottom: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 0.82rem;
+    font-weight: 700;
+    text-align: center;
+    padding: 6px 14px;
+    letter-spacing: 0.04em;
+}
+
+.transfer-direction {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.transfer-dir-opt {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+
+.modal-field-label {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-top: 4px;
+}
+
+#input-transfer-qty {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 1rem;
+    padding: 10px 12px;
+    outline: none;
+}
+#input-transfer-qty:focus { border-color: var(--accent); }
+
+#select-transfer-location {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 0.95rem;
+    padding: 10px 12px;
+    outline: none;
+}
+#select-transfer-location:focus { border-color: var(--accent); }
 
 /* ─── Responsive cap for larger screens ──────────────────────────────────────── */
 @media (min-width: 540px) {

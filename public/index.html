@@ -12,7 +12,10 @@
     <header id="app-header">
         <div class="header-top">
             <h1>InTracker</h1>
-            <button id="btn-transactions" class="btn-icon" title="Transaction Log" disabled>&#9776; Log</button>
+            <div class="header-actions">
+                <button id="btn-truck-stock" class="btn-icon" title="My Truck Stock" disabled>&#128666; Truck</button>
+                <button id="btn-transactions" class="btn-icon" title="Transaction Log" disabled>&#9776; Log</button>
+            </div>
         </div>
         <!-- Name Banner -->
         <div id="name-banner" class="name-banner required">
@@ -42,6 +45,7 @@
 
         <!-- Inventory View -->
         <div id="view-inventory" class="view">
+            <div id="truck-mode-banner" class="hidden">&#128666; Truck Stock &mdash; <span id="truck-mode-name"></span></div>
             <div id="search-bar">
                 <input type="search" id="input-search" placeholder="&#128269; Search part number or description..." />
             </div>
@@ -59,11 +63,17 @@
                     <option value="desc-desc">Name Z→A</option>
                     <option value="equip-asc">Equipment A→Z</option>
                 </select>                <button id="btn-reorder" class="btn-reorder" title="Download CSV of parts below par level">&#8595; Reorder</button>
+                <label id="lbl-upload-orders" class="btn-upload-orders" title="Upload a PO CSV to add on-order quantities">
+                    &#8679; Upload PO
+                    <input type="file" id="input-orders-csv" accept=".csv" style="display:none">
+                </label>
             </div>
             <div id="parts-list-header">
                 <span>Part # / Description</span>
                 <span>Par</span>
-                <span>Shed QTY on Hand</span>            </div>
+                <span>On Order</span>
+                <span>Shed QTY on Hand</span>
+            </div>
             <div id="parts-list"></div>
             <div id="no-results" class="hidden">No parts match your search.</div>
         </div>
@@ -94,6 +104,34 @@
             <div class="modal-actions">
                 <button id="btn-new-loc-confirm" class="btn-primary">Create</button>
                 <button id="btn-new-loc-cancel" class="btn-ghost">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Transfer Modal -->
+    <div id="modal-transfer" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-box">
+            <div class="modal-title">Transfer Part</div>
+            <p class="modal-hint"><span id="transfer-pn-display" style="font-weight:700;color:var(--accent)"></span></p>
+            <div class="transfer-direction">
+                <label class="transfer-dir-opt">
+                    <input type="radio" name="transfer-dir" id="transfer-dir-out" value="truck-to-loc" checked>
+                    Truck &rarr; Location
+                </label>
+                <label class="transfer-dir-opt">
+                    <input type="radio" name="transfer-dir" id="transfer-dir-in" value="loc-to-truck">
+                    Location &rarr; Truck
+                </label>
+            </div>
+            <select id="select-transfer-location">
+                <option value="">&#8212; Select Location &#8212;</option>
+            </select>
+            <label class="modal-field-label" for="input-transfer-qty">Quantity</label>
+            <input type="number" id="input-transfer-qty" min="1" value="1">
+            <div id="transfer-error" class="modal-error hidden"></div>
+            <div class="modal-actions">
+                <button id="btn-transfer-confirm" class="btn-primary">Transfer</button>
+                <button id="btn-transfer-cancel" class="btn-ghost">Cancel</button>
             </div>
         </div>
     </div>
