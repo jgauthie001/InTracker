@@ -43,4 +43,8 @@ Web-based parts inventory tracker. Node.js + Express backend, vanilla JS fronten
 - Auth: user field in transactions is free-text today, swap for session middleware later
 
 ## Running
-Double-click START.bat or: npm install && node server.js
+- **Production:** Double-click START.bat → port 3030, data dir: data/
+- **Development:** Double-click START-DEV.bat → port 3031, data dir: data-dev/
+- Manual dev: `set PORT=3031 && set DATA_DIR=data-dev && node server.js`
+- START-DEV.bat auto-syncs data/parts.csv → data-dev/parts.csv on each launch
+- Startup log shows [PRODUCTION] or [DEVELOPMENT] and the active data path

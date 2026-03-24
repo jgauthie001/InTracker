@@ -25,13 +25,19 @@ No frontend framework, no build step. The server serves static files and exposes
 E:\intracker\
 ├── server.js               Express API server
 ├── package.json
-├── START.bat               Double-click launcher (Windows)
+├── START.bat               Production launcher (port 3030, data/)
+├── START-DEV.bat           Development launcher (port 3031, data-dev/)
 ├── ARCHITECTURE.md         This file
-├── data/
+├── data/                   Production data
 │   ├── parts.csv           Master parts list (managed externally)
 │   ├── transactions.csv    Append-only transaction log (auto-created)
+│   ├── hidden_locations.json
+│   ├── backups/            Daily backup snapshots
 │   └── locations/
 │       └── <Name>.csv      One file per location
+├── data-dev/               Development data (separate from production)
+│   ├── parts.csv           Synced from data/ by START-DEV.bat on each launch
+│   └── locations/          (same structure as data/locations/)
 └── public/
     ├── index.html
     ├── css/
@@ -169,17 +175,40 @@ The **⬇ Reorder** button (next to the sort controls) computes `quantity_needed
 
 ## Running the App
 
+### Production (port 3030)
 ```bat
-START.bat          # Windows — installs deps if needed, starts server on port 3030
+START.bat
 ```
-
 Or manually:
 ```bash
 npm install
 node server.js
 ```
+Server runs on port `3030` using `data/`. Users on the same network connect via `http://<machine-name>:3030`.
 
-Server runs on port `3030`. Users on the same network connect via `http://<machine-name>:3030`.
+### Development (port 3031)
+```bat
+START-DEV.bat
+```
+Or manually:
+```bash
+set PORT=3031
+set DATA_DIR=data-dev
+node server.js
+```
+Server runs on port `3031` using `data-dev/`. Completely isolated from production — separate locations, transactions, and backups. `START-DEV.bat` automatically syncs `data/parts.csv` → `data-dev/parts.csv` on each launch so the part catalog stays current.
+
+### Environment Variables
+| Variable   | Default  | Description                        |
+|------------|----------|------------------------------------|
+| `PORT`     | `3030`   | HTTP port to listen on             |
+| `DATA_DIR` | `data/`  | Path to data directory (relative to server.js or absolute) |
+
+The startup log identifies the active environment:
+```
+InTracker [PRODUCTION] running at http://localhost:3030
+InTracker [DEVELOPMENT] running at http://localhost:3031
+```
 
 ---
 

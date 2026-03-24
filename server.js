@@ -11,7 +11,9 @@ const cors = require('cors');
 
 const app = express();
 const PORT = process.env.PORT || 3030;
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = process.env.DATA_DIR
+    ? path.resolve(process.env.DATA_DIR)
+    : path.join(__dirname, 'data');
 const LOCATIONS_DIR = path.join(DATA_DIR, 'locations');
 const PARTS_FILE = path.join(DATA_DIR, 'parts.csv');
 const TRANSACTIONS_FILE = path.join(DATA_DIR, 'transactions.csv');
@@ -351,5 +353,7 @@ runDailyBackup();
 setInterval(runDailyBackup, 60 * 60 * 1000); // re-check every hour
 
 app.listen(PORT, () => {
-    console.log(`InTracker running at http://localhost:${PORT}`);
+    const env = process.env.DATA_DIR ? 'DEVELOPMENT' : 'PRODUCTION';
+    console.log(`InTracker [${env}] running at http://localhost:${PORT}`);
+    console.log(`Data directory: ${DATA_DIR}`);
 });

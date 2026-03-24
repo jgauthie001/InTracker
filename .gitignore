@@ -3,3 +3,9 @@ data/transactions.csv
 data/locations/
 data/backups/
 data/hidden_locations.json
+
+# Dev environment — parts.csv is tracked; transactional data is not
+data-dev/transactions.csv
+data-dev/locations/
+data-dev/backups/
+data-dev/hidden_locations.json
