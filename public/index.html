@@ -11,8 +11,9 @@
     <!-- Header -->
     <header id="app-header">
         <div class="header-top">
-            <h1>InTracker</h1>
+            <h1 id="app-title" title="Tap to toggle PO Entry mode">InTracker</h1>
             <div class="header-actions">
+                <button id="btn-exit-po" class="btn-exit-po hidden">Exit PO Entry</button>
                 <button id="btn-truck-stock" class="btn-icon" title="My Truck Stock" disabled>&#128666; Truck</button>
                 <button id="btn-transactions" class="btn-icon" title="Transaction Log" disabled>&#9776; Log</button>
             </div>
@@ -90,6 +91,25 @@
             </div>
             <div id="txn-list"></div>
             <div id="txn-pagination" class="pagination"></div>
+        </div>
+
+        <!-- Truck Transfer View -->
+        <div id="view-truck" class="view">
+            <div id="truck-view-header">
+                <span>&#128666; <span id="truck-col-loc-name"></span> &harr; Truck</span>
+                <button id="btn-truck-done" class="btn-secondary">&#8592; Back</button>
+            </div>
+            <div id="truck-search-bar">
+                <input type="search" id="truck-input-search" placeholder="&#128269; Search part number or description...">
+            </div>
+            <div id="truck-list-header">
+                <span>Part # / Description</span>
+                <span id="truck-col-loc-header">Location</span>
+                <span></span>
+                <span>Truck</span>
+            </div>
+            <div id="truck-parts-list"></div>
+            <div id="truck-no-results" class="hidden">No parts match your search.</div>
         </div>
 
     </main>

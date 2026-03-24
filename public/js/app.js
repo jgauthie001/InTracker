@@ -1,4 +1,4 @@
-/**
+﻿/**
  * InTracker App
  * Mobile-first inventory tracking frontend
  */
@@ -17,7 +17,10 @@ const state = {
     equipFilter: '',
     sortKey: 'default',
     truckLocation: '',
-    isTruckMode: false
+    isTruckMode: false,
+    locInventory: [],
+    truckInventory: [],
+    hideOrder: true
 };
 
 // ─── DOM Refs ─────────────────────────────────────────────────────────────────
@@ -31,6 +34,7 @@ const btnTransactions = $('btn-transactions');
 const viewSplash      = $('view-splash');
 const viewInventory   = $('view-inventory');
 const viewTransactions= $('view-transactions');
+const viewTruck        = $('view-truck');
 const partsList       = $('parts-list');
 const noResults       = $('no-results');
 const inputSearch          = $('input-search');
@@ -39,6 +43,7 @@ const selectSort           = $('select-sort');
 const btnReorder           = $('btn-reorder');
 const splashText           = $('splash-text');
 const btnTruckStock        = $('btn-truck-stock');
+const btnExitPo            = $('btn-exit-po');
 const inputOrdersCsv       = $('input-orders-csv');
 
 // Transfer modal
@@ -73,8 +78,9 @@ function activeLocation() {
 
 // ─── Parts list header text ──────────────────────────────────────────────────
 function updatePartsListHeader() {
+    const isTruck = state.isTruckMode || activeLocation().startsWith('truck_');
     const spans = document.querySelectorAll('#parts-list-header span');
-    if (spans[3]) spans[3].textContent = state.isTruckMode ? 'Truck QTY' : 'Shed QTY on Hand';
+    if (spans[3]) spans[3].textContent = isTruck ? 'Truck QTY' : 'Shed QTY on Hand';
 }
 
 // ─── Header height recalculation ──────────────────────────────────────────────
@@ -94,7 +100,7 @@ function showToast(msg, duration = 2500) {
 
 // ─── View Switcher ────────────────────────────────────────────────────────────
 function showView(view) {
-    [viewSplash, viewInventory, viewTransactions].forEach(v => v.classList.remove('active'));
+    [viewSplash, viewInventory, viewTransactions, viewTruck].forEach(v => v.classList.remove('active'));
     view.classList.add('active');
 }
 
@@ -122,11 +128,12 @@ function applyUserState() {
         btnTruckStock.disabled = true;
         if (state.isTruckMode) {
             state.isTruckMode = false;
-            state.truckLocation = '';
+            state.locInventory = [];
+            state.truckInventory = [];
             btnTruckStock.classList.remove('active');
-            $('truck-mode-banner').classList.add('hidden');
-            updatePartsListHeader();
         }
+        state.truckLocation = '';
+        removeDropdownTruck();
         splashText.textContent = 'Enter your name above to get started.';
         showView(viewSplash);
         state.location = '';
@@ -139,6 +146,7 @@ inputUser.addEventListener('input', () => {
     state.user = inputUser.value;
     localStorage.setItem('intracker_user', state.user);
     applyUserState();
+    scheduleTruckDropdown();
 });
 
 // ─── Locations ────────────────────────────────────────────────────────────────
@@ -153,20 +161,55 @@ async function loadLocations() {
             opt.textContent = loc.replace(/_/g, ' ');
             selectLocation.appendChild(opt);
         });
+        addTruckToDropdown();
         if (state.location) selectLocation.value = state.location;
     } catch (err) {
         showToast('Failed to load locations');
     }
 }
 
+// ─── Truck Dropdown Helpers ───────────────────────────────────────────────────
+function addTruckToDropdown() {
+    if (!state.truckLocation) return;
+    let opt = selectLocation.querySelector('option[data-truck]');
+    if (!opt) {
+        opt = document.createElement('option');
+        opt.dataset.truck = '1';
+        selectLocation.appendChild(opt);
+    }
+    opt.value = state.truckLocation;
+    opt.textContent = '\uD83D\uDE9B My Truck';
+    if (state.location === state.truckLocation) selectLocation.value = state.truckLocation;
+}
+
+function removeDropdownTruck() {
+    const opt = selectLocation.querySelector('option[data-truck]');
+    if (opt) opt.remove();
+}
+
+let truckDropdownTimer;
+function scheduleTruckDropdown() {
+    clearTimeout(truckDropdownTimer);
+    if (!state.user.trim()) { removeDropdownTruck(); return; }
+    truckDropdownTimer = setTimeout(async () => {
+        if (!state.user.trim()) return;
+        try {
+            const res = await fetch(`/api/truck/${encodeURIComponent(state.user.trim())}`);
+            const data = await res.json();
+            if (!res.ok) return;
+            state.truckLocation = data.location;
+            addTruckToDropdown();
+        } catch {}
+    }, 600);
+}
+
 selectLocation.addEventListener('change', () => {
-    // Selecting a real location exits truck mode
+    // Selecting from dropdown exits truck transfer mode
     if (state.isTruckMode) {
         state.isTruckMode = false;
-        state.truckLocation = '';
+        state.locInventory = [];
+        state.truckInventory = [];
         btnTruckStock.classList.remove('active');
-        $('truck-mode-banner').classList.add('hidden');
-        updatePartsListHeader();
     }
     state.location = selectLocation.value;
     if (state.location) {
@@ -230,12 +273,20 @@ async function loadInventory() {
         if (!res.ok) { showToast(data.error || 'Failed to load inventory'); showView(viewSplash); return; }
         state.inventory = data.inventory;
         state.partsHeaders = data.partsHeaders;
+        updatePartsListHeader();
         populateEquipmentFilter();
         renderInventory();
+        applyOrderVisibility();
     } catch {
         showToast('Failed to load inventory');
         showView(viewSplash);
     }
+}
+
+function applyOrderVisibility() {
+    const hide = state.hideOrder || activeLocation().startsWith('truck_');
+    viewInventory.classList.toggle('order-hidden', hide);
+    btnExitPo.classList.toggle('hidden', state.hideOrder);
 }
 
 function populateEquipmentFilter() {
@@ -335,7 +386,7 @@ function renderInventory(filter = '') {
                 <input class="part-qty-input ${qtyClass}" type="number" value="${qty}" min="0" data-pn="${escapeAttr(item.part_number)}" ${disabled} aria-label="Quantity for ${escapeAttr(item.part_number)}">
                 <button class="btn-adj btn-add" data-pn="${escapeAttr(item.part_number)}" data-action="add" ${disabled} title="Add">&#43;</button>
             </div>
-            ${state.isTruckMode ? `<div class="truck-transfer-bar"><button class="btn-transfer" data-pn="${escapeAttr(item.part_number)}" ${disabled} title="Transfer to/from a location">&#8644; Transfer</button></div>` : ''}`;
+            `;
         frag.appendChild(card);
     });
     partsList.appendChild(frag);
@@ -354,7 +405,7 @@ selectSort.addEventListener('change', () => {
 });
 
 // ─── Card Display Update Helper ───────────────────────────────────────────────
-function updateCardDisplay(pn, newQty) {
+function updateCardDisplay(pn, newQty, newOnOrder) {
     const input = partsList.querySelector(`.part-qty-input[data-pn="${escapeAttr(pn)}"]`);
     if (!input) return;
     input.value = newQty;
@@ -364,6 +415,16 @@ function updateCardDisplay(pn, newQty) {
     if (card && item) {
         const parLevel = getParLevel(item);
         card.classList.toggle('below-par', !state.isTruckMode && parLevel > 0 && newQty < parLevel);
+        if (newOnOrder !== undefined) {
+            const orderSpan = card.querySelector(`.part-order[data-pn="${escapeAttr(pn)}"]`);
+            if (orderSpan) {
+                const disabled = !state.user ? 'disabled' : '';
+                orderSpan.className = `part-order${newOnOrder > 0 ? ' has-order' : ''}`;
+                orderSpan.innerHTML = `<span class="order-label">On Ord</span>
+                    ${newOnOrder > 0 ? newOnOrder : '&mdash;'}
+                    ${newOnOrder > 0 ? `<button class="btn-receive" data-pn="${escapeAttr(pn)}" ${disabled} title="Receive ${newOnOrder} unit(s) into current location">&#10003; Rcv</button>` : ''}`;
+            }
+        }
     }
 }
 
@@ -400,7 +461,8 @@ partsList.addEventListener('click', async e => {
         const { ok, data } = await sendAdjust(pn, action, 1);
         if (!ok) { showToast(data.error || 'Error adjusting quantity', 3000); return; }
         item.quantity = data.quantity;
-        updateCardDisplay(pn, data.quantity);
+        if (data.on_order !== undefined) item.on_order = data.on_order;
+        updateCardDisplay(pn, data.quantity, data.on_order);
         showToast(`${action === 'add' ? '+1' : '-1'} ${pn} → ${data.quantity}`);
     } catch {
         showToast('Server error. Please try again.', 3000);
@@ -435,7 +497,8 @@ partsList.addEventListener('change', async e => {
             return;
         }
         item.quantity = data.quantity;
-        updateCardDisplay(pn, data.quantity);
+        if (data.on_order !== undefined) item.on_order = data.on_order;
+        updateCardDisplay(pn, data.quantity, data.on_order);
         showToast(`${pn} → ${data.quantity} in stock`);
     } catch {
         showToast('Server error. Please try again.', 3000);
@@ -544,15 +607,19 @@ btnTruckStock.addEventListener('click', async () => {
     if (!state.user.trim()) { showToast('Please enter your name first'); return; }
 
     if (state.isTruckMode) {
+        // Exit truck view → return to location inventory
         state.isTruckMode = false;
         state.truckLocation = '';
+        state.locInventory = [];
+        state.truckInventory = [];
         btnTruckStock.classList.remove('active');
-        $('truck-mode-banner').classList.add('hidden');
-        updatePartsListHeader();
-        if (state.location) { loadInventory(); }
+        if (state.location) loadInventory();
         else { showView(viewSplash); splashText.textContent = 'Select a location to view inventory.'; }
         return;
     }
+
+    if (!state.location) { showToast('Select a location first'); return; }
+    if (state.location === state.truckLocation) { showToast('Select a location (not your truck) to use transfer mode'); return; }
 
     btnTruckStock.disabled = true;
     try {
@@ -563,10 +630,10 @@ btnTruckStock.addEventListener('click', async () => {
         state.truckLocation = data.location;
         state.isTruckMode = true;
         btnTruckStock.classList.add('active');
-        $('truck-mode-name').textContent = state.user.trim();
-        $('truck-mode-banner').classList.remove('hidden');
-        updatePartsListHeader();
-        await loadInventory();
+        const locDisplay = state.location.replace(/_/g, ' ');
+        $('truck-col-loc-name').textContent = locDisplay;
+        $('truck-col-loc-header').textContent = locDisplay;
+        await loadTruckView();
         if (data.created) showToast('Truck stock created for ' + state.user.trim());
     } catch {
         showToast('Server error loading truck stock');
@@ -575,8 +642,212 @@ btnTruckStock.addEventListener('click', async () => {
     }
 });
 
+// ─── Truck Transfer View ──────────────────────────────────────────────────────
+async function loadTruckView() {
+    const listEl = $('truck-parts-list');
+    listEl.innerHTML = '<div class="splash-message"><div class="splash-icon">&#8635;</div><p>Loading...</p></div>';
+    showView(viewTruck);
+    try {
+        const [locRes, truckRes] = await Promise.all([
+            fetch(`/api/inventory/${encodeURIComponent(state.location)}`),
+            fetch(`/api/inventory/${encodeURIComponent(state.truckLocation)}`)
+        ]);
+        const [locData, truckData] = await Promise.all([locRes.json(), truckRes.json()]);
+        if (!locRes.ok)   { showToast(locData.error   || 'Failed to load location inventory'); return; }
+        if (!truckRes.ok) { showToast(truckData.error || 'Failed to load truck inventory');    return; }
+        state.locInventory   = locData.inventory;
+        state.truckInventory = truckData.inventory;
+        renderTruckView($('truck-input-search').value);
+    } catch {
+        showToast('Failed to load truck view');
+    }
+}
+
+function renderTruckView(filter = '') {
+    const listEl      = $('truck-parts-list');
+    const noResultsEl = $('truck-no-results');
+    const term = filter.toLowerCase().trim();
+
+    // Merge all part numbers from both sides
+    const allPns = new Set([
+        ...state.locInventory.map(i => i.part_number),
+        ...state.truckInventory.map(i => i.part_number)
+    ]);
+
+    let items = [...allPns].map(pn => {
+        const li = state.locInventory.find(i => i.part_number === pn)   || { part_number: pn, quantity: 0 };
+        const ti = state.truckInventory.find(i => i.part_number === pn) || { part_number: pn, quantity: 0 };
+        return { ...li, locQty: Number(li.quantity) || 0, truckQty: Number(ti.quantity) || 0 };
+    });
+
+    if (term) {
+        items = items.filter(item =>
+            item.part_number.toLowerCase().includes(term) ||
+            getDescription(item).toLowerCase().includes(term) ||
+            getEquipment(item).toLowerCase().includes(term)
+        );
+    }
+
+    listEl.innerHTML = '';
+    if (items.length === 0) { noResultsEl.classList.remove('hidden'); return; }
+    noResultsEl.classList.add('hidden');
+
+    const frag = document.createDocumentFragment();
+    items.forEach(item => {
+        const desc     = getDescription(item);
+        const equip    = getEquipment(item);
+        const descLine = desc + (equip ? ` \u2022 ${equip}` : '');
+        const { locQty, truckQty } = item;
+        const locClass   = locQty   === 0 ? 'zero' : locQty   <= 5 ? 'low' : '';
+        const truckClass = truckQty === 0 ? 'zero' : truckQty <= 5 ? 'low' : '';
+        const noUser = !state.user;
+        const card = document.createElement('div');
+        card.className = 'truck-card';
+        card.dataset.pn = item.part_number;
+        card.innerHTML = `
+            <div class="truck-card-info">
+                <span class="part-pn">${escapeHtml(item.part_number)}</span>
+                <span class="part-desc">${escapeHtml(descLine)}</span>
+            </div>
+            <div class="truck-qty-cell loc-side">
+                <span class="truck-cell-label">${escapeHtml(state.location.replace(/_/g, ' '))}</span>
+                <span class="truck-qty-val loc-val ${locClass}">${locQty}</span>
+            </div>
+            <div class="truck-arrows">
+                <button class="btn-to-truck" data-pn="${escapeAttr(item.part_number)}" ${noUser || locQty === 0 ? 'disabled' : ''} title="Move 1 to Truck">&#x2192;</button>
+                <button class="btn-to-loc"   data-pn="${escapeAttr(item.part_number)}" ${noUser || truckQty === 0 ? 'disabled' : ''} title="Move 1 to Location">&#x2190;</button>
+            </div>
+            <div class="truck-qty-cell truck-side">
+                <span class="truck-cell-label">Truck</span>
+                <input class="truck-qty-input ${truckClass}" type="number" value="${truckQty}" min="0" data-pn="${escapeAttr(item.part_number)}" ${noUser ? 'disabled' : ''} aria-label="Truck quantity for ${escapeAttr(item.part_number)}">
+            </div>`;
+        frag.appendChild(card);
+    });
+    listEl.appendChild(frag);
+}
+
+function updateTruckCard(pn) {
+    const listEl = $('truck-parts-list');
+    const card = listEl.querySelector(`.truck-card[data-pn="${escapeAttr(pn)}"]`);
+    if (!card) return;
+    const li = state.locInventory.find(i => i.part_number === pn);
+    const ti = state.truckInventory.find(i => i.part_number === pn);
+    const newLocQty   = Number(li?.quantity) || 0;
+    const newTruckQty = Number(ti?.quantity) || 0;
+    const locVal   = card.querySelector('.loc-val');
+    const truckInput = card.querySelector('.truck-qty-input');
+    if (locVal) {
+        locVal.textContent = newLocQty;
+        locVal.className = `truck-qty-val loc-val ${newLocQty === 0 ? 'zero' : newLocQty <= 5 ? 'low' : ''}`.trim();
+    }
+    if (truckInput) {
+        truckInput.value = newTruckQty;
+        truckInput.className = `truck-qty-input ${newTruckQty === 0 ? 'zero' : newTruckQty <= 5 ? 'low' : ''}`.trim();
+    }
+    const toTruckBtnEl = card.querySelector('.btn-to-truck');
+    const toLocBtnEl   = card.querySelector('.btn-to-loc');
+    if (toTruckBtnEl) toTruckBtnEl.disabled = !state.user || newLocQty   === 0;
+    if (toLocBtnEl)   toLocBtnEl.disabled   = !state.user || newTruckQty === 0;
+}
+
+$('truck-input-search').addEventListener('input', function () {
+    renderTruckView(this.value);
+});
+
+$('truck-parts-list').addEventListener('change', async e => {
+    const input = e.target.closest('.truck-qty-input');
+    if (!input) return;
+    if (!state.user.trim()) { showToast('Please enter your name first'); return; }
+
+    const pn = input.dataset.pn;
+    const ti = state.truckInventory.find(i => i.part_number === pn);
+    if (!ti) return;
+
+    const newQty = parseInt(input.value, 10);
+    const oldQty = Number(ti.quantity) || 0;
+    if (isNaN(newQty) || newQty < 0) { input.value = oldQty; return; }
+    if (newQty === oldQty) return;
+
+    const diff   = Math.abs(newQty - oldQty);
+    const action = newQty > oldQty ? 'add' : 'subtract';
+
+    input.disabled = true;
+    try {
+        const res = await fetch(`/api/inventory/${encodeURIComponent(state.truckLocation)}/adjust`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ part_number: pn, action, quantity: diff, user: state.user.trim() })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            showToast(data.error || 'Error adjusting quantity', 3000);
+            input.value = oldQty;
+            return;
+        }
+        ti.quantity = data.quantity;
+        updateTruckCard(pn);
+        showToast(`Truck: ${pn} \u2192 ${data.quantity}`);
+    } catch {
+        showToast('Server error. Please try again.', 3000);
+        input.value = oldQty;
+    } finally {
+        input.disabled = false;
+    }
+});
+
+$('truck-parts-list').addEventListener('click', async e => {
+    const toTruckBtn = e.target.closest('.btn-to-truck');
+    const toLocBtn   = e.target.closest('.btn-to-loc');
+    if (!toTruckBtn && !toLocBtn) return;
+    if (!state.user.trim()) { showToast('Please enter your name first'); return; }
+
+    const btn     = toTruckBtn || toLocBtn;
+    const pn      = btn.dataset.pn;
+    const fromLoc = toTruckBtn ? state.location      : state.truckLocation;
+    const toLoc   = toTruckBtn ? state.truckLocation : state.location;
+
+    btn.disabled = true;
+    try {
+        const res = await fetch('/api/transfer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from_location: fromLoc, to_location: toLoc, part_number: pn, quantity: 1, user: state.user.trim() })
+        });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Transfer failed', 3000); btn.disabled = false; return; }
+
+        // Update in-memory state
+        const li = state.locInventory.find(i => i.part_number === pn);
+        const ti = state.truckInventory.find(i => i.part_number === pn);
+        if (toTruckBtn) {
+            if (li) li.quantity = data.from.quantity;
+            if (ti) ti.quantity = data.to.quantity;
+            else state.truckInventory.push({ part_number: pn, quantity: data.to.quantity });
+        } else {
+            if (ti) ti.quantity = data.from.quantity;
+            if (li) li.quantity = data.to.quantity;
+            else state.locInventory.push({ part_number: pn, quantity: data.to.quantity });
+        }
+        updateTruckCard(pn);
+        const dest = toTruckBtn ? 'Truck' : state.location.replace(/_/g, ' ');
+        showToast(`1 \xd7 ${pn} \u2192 ${dest}`);
+    } catch {
+        showToast('Server error', 3000);
+        btn.disabled = false;
+    }
+});
+
+$('btn-truck-done').addEventListener('click', () => {
+    state.isTruckMode    = false;
+    state.truckLocation  = '';
+    state.locInventory   = [];
+    state.truckInventory = [];
+    btnTruckStock.classList.remove('active');
+    if (state.location) loadInventory();
+    else { showView(viewSplash); splashText.textContent = 'Select a location to view inventory.'; }
+});
+
 // ─── Transfer Modal ───────────────────────────────────────────────────────────
-let _transferPn = '';
 
 function openTransferModal(pn) {
     _transferPn = pn;
@@ -661,6 +932,18 @@ document.addEventListener('keydown', async e => {
 });
 
 // ─── Transaction Log ──────────────────────────────────────────────────────────
+// ─── PO Entry Mode ───────────────────────────────────────────────────────────
+$('app-title').addEventListener('click', () => {
+    state.hideOrder = false;
+    applyOrderVisibility();
+    showToast('PO Entry mode on');
+});
+
+btnExitPo.addEventListener('click', () => {
+    state.hideOrder = true;
+    applyOrderVisibility();
+    showToast('PO Entry mode off');
+});
 btnTransactions.addEventListener('click', () => {
     state.txnPage = 1;
     state.txnUserFilter = '';
@@ -773,6 +1056,7 @@ function escapeAttr(str) {
     inputUser.value = saved;
     state.user = saved;
     applyUserState();
+    if (state.user.trim()) scheduleTruckDropdown();
 
     await loadLocations();
     updateHeaderHeight();

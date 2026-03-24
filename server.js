@@ -324,7 +324,30 @@ app.post('/api/inventory/:location/adjust', async (req, res) => {
         const logLine = `\n${ts},${escapeCSVField(user.trim())},${escapeCSVField(safe)},${escapeCSVField(part_number)},${action},${qty},${newQty}`;
         await fsp.appendFile(TRANSACTIONS_FILE, logLine, 'utf8');
 
-        res.json({ part_number, quantity: newQty });
+        // When adding stock, reduce on-order quantity accordingly
+        let newOnOrder = undefined;
+        if (action === 'add') {
+            try {
+                await ensureOrdersFile();
+                const ordersText = await fsp.readFile(ORDERS_FILE, 'utf8');
+                const { rows: orderRows } = parseCSV(ordersText);
+                const orderMap = {};
+                orderRows.forEach(r => { orderMap[r.part_number] = parseInt(r.quantity_on_order, 10) || 0; });
+                const onOrder = orderMap[part_number] || 0;
+                if (onOrder > 0) {
+                    orderMap[part_number] = Math.max(0, onOrder - qty);
+                    newOnOrder = orderMap[part_number];
+                    const newOrderRows = Object.entries(orderMap)
+                        .filter(([, q]) => q > 0)
+                        .map(([p, q]) => ({ part_number: p, quantity_on_order: q }));
+                    await fsp.writeFile(ORDERS_FILE, rowsToCSV(['part_number', 'quantity_on_order'], newOrderRows), 'utf8');
+                } else {
+                    newOnOrder = 0;
+                }
+            } catch { /* orders file not available */ }
+        }
+
+        res.json({ part_number, quantity: newQty, ...(newOnOrder !== undefined ? { on_order: newOnOrder } : {}) });
     } catch (err) {
         if (err.code === 'ENOENT') return res.status(404).json({ error: 'Location not found' });
         res.status(500).json({ error: err.message });
