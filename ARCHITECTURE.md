@@ -1,5 +1,30 @@
 # InTracker — Architecture Documentation
 
+---
+
+## ⚠️ DEVELOPMENT ENVIRONMENT RULES — READ FIRST
+
+### 🚨 CRITICAL LESSON LEARNED (2026-03-25)
+
+Multiple sessions of code changes were made directly to `E:\intracker\public\` (PRODUCTION) instead of this dev directory. The changes were functional but went live in production with zero testing. This was caught and manually synced but could have caused a broken production system or data loss.
+
+**Before editing ANY file, verify its path starts with `E:\intracker-dev\`. If it starts with `E:\intracker\` and NOT `E:\intracker-dev\`, STOP — you are editing production.**
+
+---
+
+**This is the DEV directory (`E:\intracker-dev\`). All code edits happen here.**
+
+| Environment | Code directory | Data directory | Port |
+|-------------|----------------|---------------|------|
+| **Development** ✅ EDIT HERE | `E:\intracker-dev\` | `E:\intracker\data-dev\` | 3031 |
+| Production ❌ DO NOT EDIT | `E:\intracker\` | `E:\intracker\data\` | 3030 |
+
+- Edit frontend files only in `E:\intracker-dev\public\`.
+- After dev testing, copy changed files to `E:\intracker\public\` to deploy to production.
+- Data is always isolated: `data-dev/` for dev, `data/` for prod.
+
+---
+
 ## Overview
 
 InTracker is a lightweight, mobile-first web application for tracking parts inventory across multiple physical locations. Users can view stock levels, add or subtract quantities directly, manage on-order purchasing (PO) quantities, transfer parts between a location and a personal truck stock, and review a full transaction history — all from a browser with no installation required.
