@@ -14,9 +14,20 @@
     --warn:      #f39c12;
     --radius:    10px;
     --header-h:  112px;
-    --locbar-h:  52px;
+    --locbar-h:   52px;
 }
-
+html.light {
+    --bg:        #f0f2f7;
+    --surface:   #ffffff;
+    --surface2:  #e4e8f0;
+    --border:    #c8cedd;
+    --accent:    #2563eb;
+    --add:       #16a34a;
+    --sub:       #dc2626;
+    --text:      #1a1d27;
+    --text-dim:  #5a6280;
+    --warn:      #d97706;
+}
 html, body {
     height: 100%;
     background: var(--bg);
@@ -159,12 +170,15 @@ h1 {
 .splash-icon { font-size: 3rem; }
 
 /* ─── Search Bar ─────────────────────────────────────────────────────────────── */
-#search-bar {
-    padding: 10px 14px 6px;
+#search-filter-wrap {
     position: sticky;
     top: calc(var(--header-h) + var(--locbar-h));
     z-index: 50;
     background: var(--bg);
+}
+
+#search-bar {
+    padding: 10px 14px 6px;
 }
 
 #input-search {
@@ -227,6 +241,7 @@ h1 {
     color: var(--text-dim);
     border-bottom: 1px solid var(--border);
     margin-bottom: 2px;
+    background: var(--bg);
 }
 
 #parts-list-header span:nth-child(2),
@@ -236,7 +251,7 @@ h1 {
 
 /* ─── Parts List ─────────────────────────────────────────────────────────────── */
 #parts-list {
-    padding: 4px 14px;
+    padding: 10px 14px 4px;
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -247,7 +262,6 @@ h1 {
     border: 1px solid var(--border);
     border-radius: var(--radius);
     display: grid;
-    grid-template-columns: 1fr 52px auto;
     grid-template-rows: auto auto;
     align-items: center;
     padding: 10px 12px;
@@ -355,28 +369,36 @@ h1 {
     border-left: 3px solid var(--sub);
 }
 
-/* ─── PO Mode — 4th column for On Order ─────────────────────────────────────── */
-#view-inventory.po-mode #parts-list-header {
+/* ─── On Order — 4th column (PO mode only) ──────────────────────────────────── */
+#parts-list-header {
+    grid-template-columns: 1fr 52px 140px;
+}
+
+.po-mode #parts-list-header {
     grid-template-columns: 1fr 52px 140px 64px;
 }
 
 .po-header-col {
-    text-align: center;
     display: none;
+    text-align: center;
 }
 
-#view-inventory.po-mode .po-header-col {
+.po-mode .po-header-col {
     display: block;
 }
 
-#view-inventory.po-mode .part-card {
+.part-card {
+    grid-template-columns: 1fr 52px auto;
+}
+
+.po-mode .part-card {
     grid-template-columns: 1fr 52px auto auto;
 }
 
 .part-order {
+    display: none;
     grid-column: 4;
     grid-row: 1 / span 2;
-    display: none;
     flex-direction: column;
     align-items: center;
     justify-content: center;
@@ -386,7 +408,7 @@ h1 {
     border-left: 1px solid var(--border);
 }
 
-#view-inventory.po-mode .part-order {
+.po-mode .part-order {
     display: flex;
 }
 
@@ -428,6 +450,85 @@ h1 {
     color: var(--text-dim);
     padding: 40px 20px;
 }
+
+/* ─── Split View: panel section headers ─────────────────────────────────────── */
+.panel-section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: var(--text-dim);
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    border-top: 1px solid var(--border);
+    position: sticky;
+    top: calc(var(--header-h) + var(--locbar-h));
+    z-index: 40;
+}
+
+#truck-panel .panel-section-header {
+    color: var(--warn);
+    border-left: 3px solid var(--warn);
+}
+
+.panel-label { flex: 1; }
+
+.panel-count {
+    font-size: 0.68rem;
+    font-weight: 400;
+    color: var(--text-dim);
+}
+
+/* ─── Truck mode: inline truck row on warehouse cards ────────────────────────── */
+/* Spans full card width below the qty controls */
+.truck-row {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 0 2px;
+    border-top: 1px dashed var(--border);
+    margin-top: 4px;
+}
+
+.truck-row-label {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+
+.truck-row-qty {
+    font-size: 0.95rem;
+    font-weight: 700;
+    min-width: 24px;
+    text-align: center;
+    color: var(--text);
+}
+.truck-row-qty.low  { color: var(--warn); }
+.truck-row-qty.zero { color: var(--sub); }
+.truck-row-qty.none { color: var(--text-dim); }
+
+.btn-xfer {
+    background: none;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    color: var(--accent);
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 3px 8px;
+    cursor: pointer;
+    white-space: nowrap;
+    line-height: 1.4;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.btn-xfer:active  { opacity: 0.7; transform: scale(0.97); }
+.btn-xfer:disabled { opacity: 0.3; pointer-events: none; }
+
 
 /* ─── Transaction Log ────────────────────────────────────────────────────────── */
 #view-transactions {
@@ -643,6 +744,15 @@ h1 {
 .btn-icon:disabled { opacity: 0.3; pointer-events: none; }
 .btn-icon:active { opacity: 0.7; }
 
+#btn-theme {
+    font-size: 1rem;
+    padding: 5px 9px;
+    line-height: 1;
+}
+
+html.light #btn-theme::after { content: ' Dark'; font-size: 0.78rem; vertical-align: middle; }
+html:not(.light) #btn-theme::after { content: ' Light'; font-size: 0.78rem; vertical-align: middle; }
+
 /* ─── Toast ──────────────────────────────────────────────────────────────────── */
 .toast {
     position: fixed;
@@ -770,6 +880,29 @@ h1 {
     background: rgba(39,174,96,0.15);
     color: var(--add);
     white-space: nowrap;
+}
+
+/* ─── Reorder format choice ───────────────────────────────────────────────────── */
+.reorder-format-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px 2px 8px;
+}
+.reorder-format-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.88rem;
+    cursor: pointer;
+    padding: 4px 2px;
+}
+.reorder-format-option input[type="radio"] {
+    accent-color: var(--accent);
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    flex-shrink: 0;
 }
 
 /* ─── File upload label (Upload PO modal) ────────────────────────────────────── */

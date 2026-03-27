@@ -19,7 +19,9 @@ const state = {
     truckVisible: false,
     truckLocation: '',
     poMode: false,
-    poOrders: {}
+    poOrders: {},
+    truckInventory: [],
+    splitView: false
 };
 
 // ─── DOM Refs ─────────────────────────────────────────────────────────────────
@@ -51,6 +53,7 @@ const btnLocationInfo      = $('btn-location-info');
 const modalLocationInfo    = $('modal-location-info');
 const locInfoCc            = $('loc-info-cc');
 const locInfoShed          = $('loc-info-shed');
+const locInfoLocationName  = $('loc-info-location-name');
 const locInfoAddress       = $('loc-info-address');
 const locInfoStreet        = $('loc-info-street');
 const locInfoCity          = $('loc-info-city');
@@ -91,6 +94,24 @@ const txnSearchPart    = $('txn-search-part');
 const btnBack          = $('btn-back');
 
 const toast            = $('toast');
+const btnTheme         = $('btn-theme');
+
+// ─── Theme ────────────────────────────────────────────────────────────────────
+(function initTheme() {
+    if (localStorage.getItem('intracker_theme') === 'light') {
+        document.documentElement.classList.add('light');
+    }
+})();
+
+btnTheme.addEventListener('click', () => {
+    const isLight = document.documentElement.classList.toggle('light');
+    localStorage.setItem('intracker_theme', isLight ? 'light' : 'dark');
+});
+
+// Truck mode panel header (shown when viewing a non-truck location in truck mode)
+const warehousePanelHeader = $('warehouse-panel-header');
+const warehousePanelTitle  = $('warehouse-panel-title');
+const warehousePanelCount  = $('warehouse-panel-count');
 
 // ─── Truck Visibility ────────────────────────────────────────────────────────
 function applyTruckVisibility() {
@@ -117,6 +138,14 @@ function applyTruckVisibility() {
     }
 
     btnTruck.disabled = !state.user.trim() || !state.truckLocation;
+
+    // If a non-truck location is already selected, enter/exit split view
+    if (state.truckVisible && state.truckLocation && state.location && state.location !== state.truckLocation) {
+        loadSplitView();
+    } else if (!state.truckVisible && state.splitView) {
+        exitSplitView();
+        renderInventory(inputSearch.value);
+    }
 }
 
 let truckDropdownTimer;
@@ -202,9 +231,10 @@ function savePOOrders(locName, orders) {
 // ─── Location Info Modal ──────────────────────────────────────────────────────
 function openLocationInfoModal() {
     const info = getLocInfo(state.location);
-    locInfoCc.value      = info.cc      || '';
-    locInfoShed.value    = info.shed    || '';
-    locInfoAddress.value = info.address || '';
+    locInfoCc.value           = info.cc           || '';
+    locInfoShed.value         = info.shed         || '';
+    locInfoLocationName.value = info.locationName || '';
+    locInfoAddress.value      = info.address      || '';
     locInfoStreet.value  = info.street  || '';
     locInfoCity.value    = info.city    || '';
     locInfoState.value   = info.state   || '';
@@ -221,9 +251,10 @@ btnLocationInfo.addEventListener('click', () => {
 btnLocInfoSave.addEventListener('click', () => {
     if (!state.location) return;
     saveLocInfo(state.location, {
-        cc:      locInfoCc.value.trim(),
-        shed:    locInfoShed.value.trim(),
-        address: locInfoAddress.value.trim(),
+        cc:           locInfoCc.value.trim(),
+        shed:         locInfoShed.value.trim(),
+        locationName: locInfoLocationName.value.trim(),
+        address:      locInfoAddress.value.trim(),
         street:  locInfoStreet.value.trim(),
         city:    locInfoCity.value.trim(),
         state:   locInfoState.value.trim(),
@@ -320,8 +351,14 @@ async function loadLocations() {
 selectLocation.addEventListener('change', () => {
     state.location = selectLocation.value;
     if (state.location) {
-        loadInventory();
+        if (state.truckVisible && state.truckLocation && state.location !== state.truckLocation) {
+            loadSplitView();
+        } else {
+            exitSplitView();
+            loadInventory();
+        }
     } else {
+        exitSplitView();
         showView(viewSplash);
         splashText.textContent = 'Select a location to view inventory.';
     }
@@ -368,6 +405,50 @@ btnNewLocConfirm.addEventListener('click', async () => {
 });
 
 inputNewLocation.addEventListener('keydown', e => { if (e.key === 'Enter') btnNewLocConfirm.click(); });
+
+// ─── Split View helpers ───────────────────────────────────────────────────────
+function exitSplitView() {
+    state.splitView = false;
+    state.truckInventory = [];
+    warehousePanelHeader.classList.add('hidden');
+}
+
+async function loadSplitView() {
+    partsList.innerHTML = '<div class="splash-message"><div class="splash-icon">&#8635;</div><p>Loading&#8230;</p></div>';
+    showView(viewInventory);
+    try {
+        const [whRes, trRes] = await Promise.all([
+            fetch(`/api/inventory/${encodeURIComponent(state.location)}`),
+            fetch(`/api/inventory/${encodeURIComponent(state.truckLocation)}`)
+        ]);
+        const [whData, trData] = await Promise.all([whRes.json(), trRes.json()]);
+        if (!whRes.ok || !trRes.ok) {
+            showToast('Failed to load one or more inventories');
+            showView(viewSplash);
+            return;
+        }
+        state.inventory      = whData.inventory;
+        state.partsHeaders   = whData.partsHeaders;
+        state.truckInventory = trData.inventory;
+        state.poOrders       = getPOOrders(state.location);
+        state.splitView      = true;
+
+        warehousePanelTitle.textContent = '\uD83C\uDFED ' + state.location.replace(/_/g, ' ') +
+            '  \u2194  \uD83D\uDE9B ' + state.truckLocation.replace(/_/g, ' ');
+        warehousePanelHeader.classList.remove('hidden');
+
+        populateEquipmentFilter();
+        renderInventory(inputSearch.value);
+    } catch {
+        showToast('Failed to load inventory');
+        showView(viewSplash);
+    }
+}
+
+function getTruckQty(pn) {
+    const item = state.truckInventory.find(i => i.part_number === pn);
+    return item ? item.quantity : null;
+}
 
 // ─── Inventory ────────────────────────────────────────────────────────────────
 async function loadInventory() {
@@ -452,9 +533,11 @@ function renderInventory(filter = '') {
     partsList.innerHTML = '';
     if (filtered.length === 0) {
         noResults.classList.remove('hidden');
+        if (state.splitView) warehousePanelCount.textContent = '(0 parts)';
         return;
     }
     noResults.classList.add('hidden');
+    if (state.splitView) warehousePanelCount.textContent = `(${filtered.length} part${filtered.length === 1 ? '' : 's'})`;
 
     const frag = document.createDocumentFragment();
     filtered.forEach(item => {
@@ -482,7 +565,18 @@ function renderInventory(filter = '') {
                 <span class="po-label">PO</span>
                 <span class="po-qty${orderQty > 0 ? ' active' : ''}">${orderQty > 0 ? orderQty : '&mdash;'}</span>
                 ${orderQty > 0 ? `<button class="btn-rcvd" data-pn="${escapeAttr(item.part_number)}" data-qty="${orderQty}" ${disabled}>Rcvd</button>` : ''}
-            </div>`;
+            </div>
+            ${state.splitView ? (() => {
+                const truckQty = getTruckQty(item.part_number);
+                const tqClass = truckQty === null ? 'none' : truckQty === 0 ? 'zero' : truckQty <= 5 ? 'low' : '';
+                const tqDisplay = truckQty !== null ? truckQty : '&mdash;';
+                return `<div class="truck-row">
+                    <span class="truck-row-label">&#128667; Truck:</span>
+                    <span class="truck-row-qty ${tqClass}" data-pn="${escapeAttr(item.part_number)}">${tqDisplay}</span>
+                    <button class="btn-xfer" data-pn="${escapeAttr(item.part_number)}" data-dir="to-shed" ${disabled} title="Move 1 from Truck to here">&#8592; Get</button>
+                    <button class="btn-xfer" data-pn="${escapeAttr(item.part_number)}" data-dir="to-truck" ${disabled} title="Move 1 from here to Truck">Send &#8594;</button>
+                </div>`;
+            })() : ''}`;
         frag.appendChild(card);
     });
     partsList.appendChild(frag);
@@ -647,7 +741,7 @@ btnReorder.addEventListener('click', () => {
     locOptions.forEach(opt => {
         const locName = opt.value;
         const info = getLocInfo(locName);
-        const hasInfo = !!(info.cc || info.shed || info.address);
+        const hasInfo = !!(info.cc || info.shed || info.locationName || info.address);
 
         const item = document.createElement('label');
         item.className = 'reorder-loc-item';
@@ -700,7 +794,12 @@ btnReorderGenerate.addEventListener('click', async () => {
     btnReorderGenerate.textContent = 'Generating…';
 
     try {
-        await generateReorderCsv(checked);
+        const fmt = document.querySelector('input[name="reorder-format"]:checked')?.value || 'batch';
+        if (fmt === 'ess') {
+            await generateEssReorderCsv(checked);
+        } else {
+            await generateReorderCsv(checked);
+        }
     } finally {
         btnReorderGenerate.disabled = false;
         btnReorderGenerate.textContent = 'Generate CSV';
@@ -709,10 +808,10 @@ btnReorderGenerate.addEventListener('click', async () => {
 
 async function generateReorderCsv(locNames) {
     const date = new Date().toISOString().slice(0, 10);
-    const COLS = 11; // total columns
+    const COLS = 12; // total columns
     const empty = () => Array(COLS).fill('');
 
-    const headerRow = ['CC#', 'Shed', 'Address', 'Street', 'City', 'State', 'Zip',
+    const headerRow = ['CC#', 'Deliver To', 'Location Name', 'Address', 'Street', 'City', 'State', 'Zip',
                        'Date Submitted', '', 'part_number', 'quantity_required'];
     const lines = [headerRow.map(csvEscape).join(',')];
 
@@ -742,14 +841,15 @@ async function generateReorderCsv(locNames) {
         // Location info row
         const info = getLocInfo(locName);
         const locRow = empty();
-        locRow[0] = info.cc      || '';
-        locRow[1] = info.shed    || locName.replace(/_/g, ' ');
-        locRow[2] = info.address || '';
-        locRow[3] = info.street  || '';
-        locRow[4] = info.city    || '';
-        locRow[5] = info.state   || '';
-        locRow[6] = info.zip     || '';
-        locRow[7] = date;
+        locRow[0] = info.cc           || '';
+        locRow[1] = info.shed         || '';
+        locRow[2] = info.locationName || locName.replace(/_/g, ' ');
+        locRow[3] = info.address      || '';
+        locRow[4] = info.street       || '';
+        locRow[5] = info.city         || '';
+        locRow[6] = info.state        || '';
+        locRow[7] = info.zip          || '';
+        locRow[8] = date;
         lines.push(locRow.map(csvEscape).join(','));
 
         // Parts rows
@@ -757,8 +857,8 @@ async function generateReorderCsv(locNames) {
             const onOrder = locOrders[item.part_number] || 0;
             const needed = getParLevel(item) - item.quantity - onOrder;
             const partRow = empty();
-            partRow[9]  = item.part_number;
-            partRow[10] = String(needed);
+            partRow[10] = item.part_number;
+            partRow[11] = String(needed);
             lines.push(partRow.map(csvEscape).join(','));
             totalParts++;
         });
@@ -781,20 +881,104 @@ async function generateReorderCsv(locNames) {
     showToast(`Reorder CSV downloaded (${totalParts} part${totalParts === 1 ? '' : 's'} across ${locNames.length} location${locNames.length === 1 ? '' : 's'})`);
 }
 
+async function generateEssReorderCsv(locNames) {
+    const date = new Date().toISOString().slice(0, 10);
+    const headerRow = ['part_number', 'description', 'quantity_required'];
+    const lines = [headerRow.map(csvEscape).join(',')];
+    let totalParts = 0;
+
+    for (const locName of locNames) {
+        let inventory;
+        try {
+            const res = await fetch(`/api/inventory/${encodeURIComponent(locName)}`);
+            const data = await res.json();
+            if (!res.ok) { showToast(`Skipping ${locName.replace(/_/g,' ')}: error`, 3000); continue; }
+            inventory = data.inventory;
+        } catch {
+            showToast(`Skipping ${locName.replace(/_/g,' ')}: network error`, 3000);
+            continue;
+        }
+
+        const locOrders = getPOOrders(locName);
+        const belowPar = inventory.filter(item => {
+            const p = getParLevel(item);
+            const onOrder = locOrders[item.part_number] || 0;
+            return p > 0 && (item.quantity + onOrder) < p;
+        });
+
+        belowPar.forEach(item => {
+            const onOrder = locOrders[item.part_number] || 0;
+            const needed = getParLevel(item) - item.quantity - onOrder;
+            lines.push([item.part_number, getDescription(item), String(needed)].map(csvEscape).join(','));
+            totalParts++;
+        });
+    }
+
+    if (lines.length === 1) {
+        showToast('No parts below par in selected locations', 3000);
+        return;
+    }
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `reorder_ess_${date}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    modalReorderSelect.classList.add('hidden');
+    showToast(`ES&S CSV downloaded (${totalParts} part${totalParts === 1 ? '' : 's'})`);
+}
+
 // ─── Upload PO CSV ────────────────────────────────────────────────────────────────────────
 function parsePOCsv(text) {
-    const lines = text.trim().split(/\r?\n/);
+    // Split a single CSV line respecting quoted fields
+    function splitLine(line) {
+        const cols = [];
+        let field = '', inQuote = false;
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (ch === '"') { inQuote = !inQuote; }
+            else if (ch === ',' && !inQuote) { cols.push(field.trim()); field = ''; }
+            else { field += ch; }
+        }
+        cols.push(field.trim());
+        return cols.map(c => c.replace(/^"|"$/g, '').trim());
+    }
+
+    const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
     if (lines.length < 2) return {};
-    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
-    const pnIdx  = headers.findIndex(h => /part.?num|^pn$/i.test(h));
+
+    const headers = splitLine(lines[0]);
+    const result  = {};
+
+    // ── Format 3: Batch reorder CSV ──
+    // Detected by CC# in col 0, or part_number in col 10 of header
+    const isBatch = /^CC#?$/i.test(headers[0]) ||
+                    (headers.length >= 11 && /part.?num/i.test(headers[10]));
+    if (isBatch) {
+        // Part rows: cols 0-9 empty, col 10 = part_number, col 11 = qty
+        lines.slice(1).forEach(line => {
+            const cols = splitLine(line);
+            const pn  = cols[10] || '';
+            const qty = parseInt(cols[11] || '', 10);
+            if (pn && !isNaN(qty) && qty > 0) result[pn] = (result[pn] || 0) + qty;
+        });
+        return result;
+    }
+
+    // ── Formats 1 & 2: column-header detection ──
+    // Format 1: part_number, quantity
+    // Format 2: part_number, description, quantity  (description ignored)
+    const pnIdx  = headers.findIndex(h => /part.?num|^pn$|^part[\s#]|^part$/i.test(h));
     const qtyIdx = headers.findIndex(h => /qty|quantity|on.?order/i.test(h));
     if (pnIdx === -1 || qtyIdx === -1) return null;
-    const result = {};
+
     lines.slice(1).forEach(line => {
-        if (!line.trim()) return;
-        const cols = line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
-        const pn  = cols[pnIdx];
-        const qty = parseInt(cols[qtyIdx], 10);
+        const cols = splitLine(line);
+        const pn  = cols[pnIdx]  || '';
+        const qty = parseInt(cols[qtyIdx] || '', 10);
         if (pn && !isNaN(qty) && qty > 0) result[pn] = (result[pn] || 0) + qty;
     });
     return result;
@@ -859,6 +1043,71 @@ modalUploadPo.addEventListener('click', e => {
     if (e.target === modalUploadPo) modalUploadPo.classList.add('hidden');
 });
 
+// ─── Transfer (truck ↔ shed split view) ──────────────────────────────────────
+async function sendTransfer(fromLoc, toLoc, part_number, quantity) {
+    const res = await fetch('/api/transfer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from_location: fromLoc, to_location: toLoc, part_number, quantity, user: state.user.trim() })
+    });
+    return res.json().then(data => ({ ok: res.ok, data }));
+}
+
+// Inline transfer button clicks (1 unit per click, no modal)
+partsList.addEventListener('click', async e => {
+    const btn = e.target.closest('.btn-xfer');
+    if (!btn || btn.disabled) return;
+    if (!state.user.trim()) { showToast('Please enter your name first'); return; }
+
+    const pn  = btn.dataset.pn;
+    const dir = btn.dataset.dir;
+    // dir="to-shed" means truck → this location; dir="to-truck" means this location → truck
+    const isTruckToShed = dir === 'to-shed';
+    const fromLoc = isTruckToShed ? state.truckLocation : state.location;
+    const toLoc   = isTruckToShed ? state.location      : state.truckLocation;
+
+    // Check available qty in source inventory
+    const fromInv  = isTruckToShed ? state.truckInventory : state.inventory;
+    const fromItem = fromInv.find(i => i.part_number === pn);
+    if (!fromItem || fromItem.quantity <= 0) {
+        showToast('None available to transfer', 2500);
+        return;
+    }
+
+    btn.disabled = true;
+    const { ok, data } = await sendTransfer(fromLoc, toLoc, pn, 1);
+    btn.disabled = false;
+
+    if (!ok) {
+        showToast(data.error || 'Transfer failed', 3000);
+        return;
+    }
+
+    // Update state
+    const truckItem = state.truckInventory.find(i => i.part_number === pn);
+    const shedItem  = state.inventory.find(i => i.part_number === pn);
+    if (isTruckToShed) {
+        if (truckItem) truckItem.quantity = data.from.quantity;
+        if (shedItem)  shedItem.quantity  = data.to.quantity;
+        updateCardDisplay(pn, data.to.quantity);
+        updateTruckRowQty(pn, data.from.quantity);
+    } else {
+        if (shedItem)  shedItem.quantity  = data.from.quantity;
+        if (truckItem) truckItem.quantity = data.to.quantity;
+        updateCardDisplay(pn, data.from.quantity);
+        updateTruckRowQty(pn, data.to.quantity);
+    }
+    showToast(`Transferred 1\u00d7 ${pn}`);
+});
+
+// Update the truck qty shown in the truck-row of a warehouse card
+function updateTruckRowQty(pn, newQty) {
+    const span = partsList.querySelector(`.truck-row-qty[data-pn="${escapeAttr(pn)}"]`);
+    if (!span) return;
+    span.textContent = newQty;
+    span.className = `truck-row-qty ${newQty === 0 ? 'zero' : newQty <= 5 ? 'low' : ''}`;
+}
+
 // ─── Keyboard Shortcuts ───────────────────────────────────────────────────────
 document.addEventListener('keydown', async e => {
     if (e.ctrlKey && e.key === 'b') {
@@ -895,6 +1144,7 @@ btnTruck.addEventListener('click', async () => {
     if (!state.user.trim() || !state.truckLocation) return;
     selectLocation.value = state.truckLocation;
     state.location = state.truckLocation;
+    exitSplitView();
     await loadInventory();
 });
 

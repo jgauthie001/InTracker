@@ -13,6 +13,7 @@
         <div class="header-top">
             <h1 id="app-title" title="Click to enter PO Entry Mode">InTracker</h1>
             <div class="header-top-actions">
+                <button id="btn-theme" class="btn-icon" title="Toggle light/dark mode">&#9790;</button>
                 <button id="btn-exit-po" class="btn-icon btn-icon-danger hidden">&#10005; Exit PO Mode</button>
                 <button id="btn-transactions" class="btn-icon" title="Transaction Log" disabled>&#9776; Log</button>
             </div>
@@ -46,6 +47,12 @@
 
         <!-- Inventory View -->
         <div id="view-inventory" class="view">
+
+            <div id="search-filter-wrap">
+            <div id="warehouse-panel-header" class="panel-section-header hidden">
+                <span class="panel-label" id="warehouse-panel-title">Warehouse</span>
+                <span class="panel-count" id="warehouse-panel-count"></span>
+            </div>
             <div id="search-bar">
                 <input type="search" id="input-search" placeholder="&#128269; Search part number or description..." />
             </div>
@@ -72,6 +79,7 @@
                 <span>Shed QTY on Hand</span>
                 <span class="po-header-col">On Order</span>
             </div>
+            </div><!-- /search-filter-wrap -->
             <div id="parts-list"></div>
             <div id="no-results" class="hidden">No parts match your search.</div>
         </div>
@@ -102,8 +110,12 @@
                 <input type="text" id="loc-info-cc" class="modal-input" placeholder="Cost Center #" maxlength="30">
             </div>
             <div class="modal-field-group">
-                <label for="loc-info-shed">Shed Name</label>
-                <input type="text" id="loc-info-shed" class="modal-input" placeholder="Shed / Location name" maxlength="60">
+                <label for="loc-info-shed">Deliver To</label>
+                <input type="text" id="loc-info-shed" class="modal-input" placeholder="Name to deliver to" maxlength="60">
+            </div>
+            <div class="modal-field-group">
+                <label for="loc-info-location-name">Location Name</label>
+                <input type="text" id="loc-info-location-name" class="modal-input" placeholder="Location / site name" maxlength="60">
             </div>
             <div class="modal-field-group">
                 <label for="loc-info-address">Address</label>
@@ -137,6 +149,16 @@
         <div class="modal-box">
             <div class="modal-title">&#8595; Generate Reorder CSV</div>
             <p class="modal-hint">Select locations to include. Only locations with parts below par will appear in the CSV.</p>
+            <div class="reorder-format-group">
+                <label class="reorder-format-option">
+                    <input type="radio" name="reorder-format" value="batch" checked>
+                    <span><strong>Batch</strong> &mdash; Multi-location CC# format</span>
+                </label>
+                <label class="reorder-format-option">
+                    <input type="radio" name="reorder-format" value="ess">
+                    <span><strong>ES&amp;S</strong> &mdash; Part #, description, quantity</span>
+                </label>
+            </div>
             <div id="reorder-loc-list" class="reorder-loc-list"></div>
             <div id="reorder-error" class="modal-error hidden"></div>
             <div class="modal-actions">
@@ -150,7 +172,7 @@
     <div id="modal-upload-po" class="modal hidden" role="dialog" aria-modal="true">
         <div class="modal-box">
             <div class="modal-title">&#128203; Upload PO CSV</div>
-            <p class="modal-hint">CSV must have part number and quantity columns. Quantities are added to existing on-order amounts for the current location.</p>
+            <p class="modal-hint">Accepts: <strong>part#&thinsp;+&thinsp;qty</strong>, <strong>part#&thinsp;+&thinsp;description&thinsp;+&thinsp;qty</strong>, or a <strong>Batch reorder CSV</strong> (single or multi-location). Quantities are added to existing on-order amounts.</p>
             <label class="file-upload-label" for="input-po-file">
                 <span id="po-file-name">Tap to select CSV file&hellip;</span>
                 <input type="file" id="input-po-file" accept=".csv,text/csv">
@@ -164,6 +186,7 @@
         </div>
     </div>
 
+    <!-- Transfer Modal -->
     <!-- New Location Modal -->
     <div id="modal-new-location" class="modal hidden" role="dialog" aria-modal="true">
         <div class="modal-box">
