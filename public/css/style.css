@@ -262,7 +262,7 @@ h1 {
     border: 1px solid var(--border);
     border-radius: var(--radius);
     display: grid;
-    grid-template-rows: auto auto;
+    grid-template-rows: auto auto auto;
     align-items: center;
     padding: 10px 12px;
     gap: 2px 10px;
@@ -470,10 +470,9 @@ h1 {
     z-index: 40;
 }
 
-#truck-panel .panel-section-header {
-    color: var(--warn);
-    border-left: 3px solid var(--warn);
-}
+
+
+#warehouse-panel-header { position: static; }
 
 .panel-label { flex: 1; }
 

@@ -411,6 +411,7 @@ function exitSplitView() {
     state.splitView = false;
     state.truckInventory = [];
     warehousePanelHeader.classList.add('hidden');
+    warehousePanelCount.textContent = '';
 }
 
 async function loadSplitView() {
@@ -547,7 +548,7 @@ function renderInventory(filter = '') {
         const parLevel = getParLevel(item);
         const belowPar = parLevel > 0 && qty < parLevel;
         const descLine = desc + (equip ? ` \u2022 ${equip}` : '');
-        const disabled = !state.user ? 'disabled' : '';
+        const disabled = !state.user.trim() ? 'disabled' : '';
         const qtyClass = qty === 0 ? 'zero' : qty <= 5 ? 'low' : '';
         const orderQty = state.poOrders[item.part_number] || 0;
         const card = document.createElement('div');
@@ -629,27 +630,101 @@ async function sendAdjust(part_number, action, quantity) {
     return res.json().then(data => ({ ok: res.ok, data }));
 }
 
+// ─── Parts list click handler (adj / rcvd / xfer) ────────────────────────────
 partsList.addEventListener('click', async e => {
-    const btn = e.target.closest('.btn-adj');
-    if (!btn) return;
-    if (!state.user.trim()) { showToast('Please enter your name first'); return; }
+    if (e.target.closest('.btn-adj')) {
+        const btn = e.target.closest('.btn-adj');
+        if (!state.user.trim()) { showToast('Please enter your name first'); return; }
 
-    const pn = btn.dataset.pn;
-    const action = btn.dataset.action;
-    const item = state.inventory.find(i => i.part_number === pn);
-    if (!item) return;
+        const pn = btn.dataset.pn;
+        const action = btn.dataset.action;
+        const item = state.inventory.find(i => i.part_number === pn);
+        if (!item) return;
 
-    btn.disabled = true;
-    try {
-        const { ok, data } = await sendAdjust(pn, action, 1);
-        if (!ok) { showToast(data.error || 'Error adjusting quantity', 3000); return; }
-        item.quantity = data.quantity;
-        updateCardDisplay(pn, data.quantity);
-        showToast(`${action === 'add' ? '+1' : '-1'} ${pn} → ${data.quantity}`);
-    } catch {
-        showToast('Server error. Please try again.', 3000);
-    } finally {
+        btn.disabled = true;
+        try {
+            const { ok, data } = await sendAdjust(pn, action, 1);
+            if (!ok) { showToast(data.error || 'Error adjusting quantity', 3000); return; }
+            item.quantity = data.quantity;
+            updateCardDisplay(pn, data.quantity);
+            showToast(`${action === 'add' ? '+1' : '-1'} ${pn} → ${data.quantity}`);
+        } catch {
+            showToast('Server error. Please try again.', 3000);
+        } finally {
+            btn.disabled = false;
+        }
+        return;
+    }
+
+    if (e.target.closest('.btn-rcvd')) {
+        const btn = e.target.closest('.btn-rcvd');
+        if (!state.user.trim()) { showToast('Please enter your name first'); return; }
+        const pn = btn.dataset.pn;
+        const orderQty = parseInt(btn.dataset.qty, 10);
+        if (!pn || isNaN(orderQty) || orderQty <= 0) return;
+        btn.disabled = true;
+        try {
+            const { ok, data } = await sendAdjust(pn, 'add', orderQty);
+            if (!ok) { showToast(data.error || 'Error receiving qty', 3000); btn.disabled = false; return; }
+            const item = state.inventory.find(i => i.part_number === pn);
+            if (item) item.quantity = data.quantity;
+            updateCardDisplay(pn, data.quantity);
+            state.poOrders[pn] = 0;
+            savePOOrders(state.location, state.poOrders);
+            updateOrderDisplay(pn, 0);
+            showToast(`Received ${orderQty}× ${pn} → ${data.quantity} in stock`);
+        } catch {
+            showToast('Server error. Please try again.', 3000);
+        } finally {
+            btn.disabled = false;
+        }
+        return;
+    }
+
+    if (e.target.closest('.btn-xfer')) {
+        const btn = e.target.closest('.btn-xfer');
+        if (btn.disabled) return;
+        if (!state.user.trim()) { showToast('Please enter your name first'); return; }
+
+        const pn  = btn.dataset.pn;
+        const dir = btn.dataset.dir;
+        // dir="to-shed" means truck → this location; dir="to-truck" means this location → truck
+        const isTruckToShed = dir === 'to-shed';
+        const fromLoc = isTruckToShed ? state.truckLocation : state.location;
+        const toLoc   = isTruckToShed ? state.location      : state.truckLocation;
+
+        // Check available qty in source inventory
+        const fromInv  = isTruckToShed ? state.truckInventory : state.inventory;
+        const fromItem = fromInv.find(i => i.part_number === pn);
+        if (!fromItem || fromItem.quantity <= 0) {
+            showToast('None available to transfer', 2500);
+            return;
+        }
+
+        btn.disabled = true;
+        const { ok, data } = await sendTransfer(fromLoc, toLoc, pn, 1);
         btn.disabled = false;
+
+        if (!ok) {
+            showToast(data.error || 'Transfer failed', 3000);
+            return;
+        }
+
+        // Update state
+        const truckItem = state.truckInventory.find(i => i.part_number === pn);
+        const shedItem  = state.inventory.find(i => i.part_number === pn);
+        if (isTruckToShed) {
+            if (truckItem) truckItem.quantity = data.from.quantity;
+            if (shedItem)  shedItem.quantity  = data.to.quantity;
+            updateCardDisplay(pn, data.to.quantity);
+            updateTruckRowQty(pn, data.from.quantity);
+        } else {
+            if (shedItem)  shedItem.quantity  = data.from.quantity;
+            if (truckItem) truckItem.quantity = data.to.quantity;
+            updateCardDisplay(pn, data.from.quantity);
+            updateTruckRowQty(pn, data.to.quantity);
+        }
+        showToast(`Transferred 1\u00d7 ${pn}`);
     }
 });
 
@@ -693,31 +768,7 @@ partsList.addEventListener('change', async e => {
 modalNewLocation.addEventListener('click', e => {
     if (e.target === modalNewLocation) modalNewLocation.classList.add('hidden');
 });
-// ─── Receive PO items (Rcvd button) ─────────────────────────────────────────────
-partsList.addEventListener('click', async e => {
-    const btn = e.target.closest('.btn-rcvd');
-    if (!btn) return;
-    if (!state.user.trim()) { showToast('Please enter your name first'); return; }
-    const pn = btn.dataset.pn;
-    const orderQty = parseInt(btn.dataset.qty, 10);
-    if (!pn || isNaN(orderQty) || orderQty <= 0) return;
-    btn.disabled = true;
-    try {
-        const { ok, data } = await sendAdjust(pn, 'add', orderQty);
-        if (!ok) { showToast(data.error || 'Error receiving qty', 3000); btn.disabled = false; return; }
-        const item = state.inventory.find(i => i.part_number === pn);
-        if (item) item.quantity = data.quantity;
-        updateCardDisplay(pn, data.quantity);
-        state.poOrders[pn] = 0;
-        savePOOrders(state.location, state.poOrders);
-        updateOrderDisplay(pn, 0);
-        showToast(`Received ${orderQty}× ${pn} → ${data.quantity} in stock`);
-    } catch {
-        showToast('Server error. Please try again.', 3000);
-    } finally {
-        btn.disabled = false;
-    }
-});
+
 // ─── Reorder CSV Download ────────────────────────────────────────────────────
 function csvEscape(val) {
     const s = String(val ?? '');
@@ -1053,52 +1104,7 @@ async function sendTransfer(fromLoc, toLoc, part_number, quantity) {
     return res.json().then(data => ({ ok: res.ok, data }));
 }
 
-// Inline transfer button clicks (1 unit per click, no modal)
-partsList.addEventListener('click', async e => {
-    const btn = e.target.closest('.btn-xfer');
-    if (!btn || btn.disabled) return;
-    if (!state.user.trim()) { showToast('Please enter your name first'); return; }
 
-    const pn  = btn.dataset.pn;
-    const dir = btn.dataset.dir;
-    // dir="to-shed" means truck → this location; dir="to-truck" means this location → truck
-    const isTruckToShed = dir === 'to-shed';
-    const fromLoc = isTruckToShed ? state.truckLocation : state.location;
-    const toLoc   = isTruckToShed ? state.location      : state.truckLocation;
-
-    // Check available qty in source inventory
-    const fromInv  = isTruckToShed ? state.truckInventory : state.inventory;
-    const fromItem = fromInv.find(i => i.part_number === pn);
-    if (!fromItem || fromItem.quantity <= 0) {
-        showToast('None available to transfer', 2500);
-        return;
-    }
-
-    btn.disabled = true;
-    const { ok, data } = await sendTransfer(fromLoc, toLoc, pn, 1);
-    btn.disabled = false;
-
-    if (!ok) {
-        showToast(data.error || 'Transfer failed', 3000);
-        return;
-    }
-
-    // Update state
-    const truckItem = state.truckInventory.find(i => i.part_number === pn);
-    const shedItem  = state.inventory.find(i => i.part_number === pn);
-    if (isTruckToShed) {
-        if (truckItem) truckItem.quantity = data.from.quantity;
-        if (shedItem)  shedItem.quantity  = data.to.quantity;
-        updateCardDisplay(pn, data.to.quantity);
-        updateTruckRowQty(pn, data.from.quantity);
-    } else {
-        if (shedItem)  shedItem.quantity  = data.from.quantity;
-        if (truckItem) truckItem.quantity = data.to.quantity;
-        updateCardDisplay(pn, data.from.quantity);
-        updateTruckRowQty(pn, data.to.quantity);
-    }
-    showToast(`Transferred 1\u00d7 ${pn}`);
-});
 
 // Update the truck qty shown in the truck-row of a warehouse card
 function updateTruckRowQty(pn, newQty) {
