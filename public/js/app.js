@@ -210,21 +210,24 @@ function saveLocInfo(locName, info) {
     } catch { /* silent */ }
 }
 
-// ─── PO Orders (localStorage) ─────────────────────────────────────────────
-function getPOOrders(locName) {
+// ─── PO Orders (server-side, per-location) ─────────────────────────────────
+async function getPOOrders(locName) {
     try {
-        const all = JSON.parse(localStorage.getItem('intracker_po_orders') || '{}');
-        return all[locName] || {};
+        const res = await fetch(`/api/po/${encodeURIComponent(locName)}`);
+        if (!res.ok) return {};
+        return await res.json();
     } catch { return {}; }
 }
 
-function savePOOrders(locName, orders) {
+async function savePOOrders(locName, orders) {
     try {
-        const all = JSON.parse(localStorage.getItem('intracker_po_orders') || '{}');
         const cleaned = {};
         Object.entries(orders).forEach(([k, v]) => { if (v > 0) cleaned[k] = v; });
-        all[locName] = cleaned;
-        localStorage.setItem('intracker_po_orders', JSON.stringify(all));
+        await fetch(`/api/po/${encodeURIComponent(locName)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ orders: cleaned })
+        });
     } catch { /* silent */ }
 }
 
@@ -431,7 +434,7 @@ async function loadSplitView() {
         state.inventory      = whData.inventory;
         state.partsHeaders   = whData.partsHeaders;
         state.truckInventory = trData.inventory;
-        state.poOrders       = getPOOrders(state.location);
+        state.poOrders       = await getPOOrders(state.location);
         state.splitView      = true;
 
         warehousePanelTitle.textContent = '\uD83C\uDFED ' + state.location.replace(/_/g, ' ') +
@@ -461,7 +464,7 @@ async function loadInventory() {
         if (!res.ok) { showToast(data.error || 'Failed to load inventory'); showView(viewSplash); return; }
         state.inventory = data.inventory;
         state.partsHeaders = data.partsHeaders;
-        state.poOrders = getPOOrders(state.location);
+        state.poOrders = await getPOOrders(state.location);
         populateEquipmentFilter();
         renderInventory();
     } catch {
@@ -503,6 +506,46 @@ function getParLevel(item) {
     return key ? parseInt(item[key], 10) || 0 : 0;
 }
 
+// ─── Card HTML builders ───────────────────────────────────────────────────────
+function buildTruckRowHTML(pn, disabled) {
+    const truckQty  = getTruckQty(pn);
+    const tqClass   = truckQty === null ? 'none' : truckQty === 0 ? 'zero' : truckQty <= 5 ? 'low' : '';
+    const tqDisplay = truckQty !== null ? truckQty : '&mdash;';
+    return `<div class="truck-row">
+                    <span class="truck-row-label">&#128667; Truck:</span>
+                    <span class="truck-row-qty ${tqClass}" data-pn="${escapeAttr(pn)}">${tqDisplay}</span>
+                    <button class="btn-xfer" data-pn="${escapeAttr(pn)}" data-dir="to-shed" ${disabled} title="Move 1 from Truck to here">&#8592; Get</button>
+                    <button class="btn-xfer" data-pn="${escapeAttr(pn)}" data-dir="to-truck" ${disabled} title="Move 1 from here to Truck">Send &#8594;</button>
+                </div>`;
+}
+
+function buildCardHTML(item) {
+    const qty      = item.quantity;
+    const desc     = getDescription(item);
+    const equip    = getEquipment(item);
+    const parLevel = getParLevel(item);
+    const descLine = desc + (equip ? ` \u2022 ${equip}` : '');
+    const disabled = !state.user.trim() ? 'disabled' : '';
+    const qtyClass = qty === 0 ? 'zero' : qty <= 5 ? 'low' : '';
+    const orderQty = state.poOrders[item.part_number] || 0;
+    const pn       = item.part_number;
+    return `
+            <span class="part-pn">${escapeHtml(pn)}</span>
+            <span class="part-desc">${escapeHtml(descLine)}</span>
+            <span class="part-par"><span class="par-label">Par</span>${parLevel > 0 ? parLevel : '&mdash;'}</span>
+            <div class="part-controls">
+                <button class="btn-adj btn-sub" data-pn="${escapeAttr(pn)}" data-action="subtract" ${disabled} title="Subtract">&#8722;</button>
+                <input class="part-qty-input ${qtyClass}" type="number" value="${qty}" min="0" data-pn="${escapeAttr(pn)}" ${disabled} aria-label="Quantity for ${escapeAttr(pn)}">
+                <button class="btn-adj btn-add" data-pn="${escapeAttr(pn)}" data-action="add" ${disabled} title="Add">&#43;</button>
+            </div>
+            <div class="part-order" data-pn="${escapeAttr(pn)}">
+                <span class="po-label">PO</span>
+                <span class="po-qty${orderQty > 0 ? ' active' : ''}">${orderQty > 0 ? orderQty : '&mdash;'}</span>
+                ${orderQty > 0 ? `<button class="btn-rcvd" data-pn="${escapeAttr(pn)}" data-qty="${orderQty}" ${disabled}>Rcvd</button>` : ''}
+            </div>
+            ${state.splitView ? buildTruckRowHTML(pn, disabled) : ''}`;
+}
+
 function renderInventory(filter = '') {
     const term = filter.toLowerCase().trim();
 
@@ -542,42 +585,10 @@ function renderInventory(filter = '') {
 
     const frag = document.createDocumentFragment();
     filtered.forEach(item => {
-        const qty = item.quantity;
-        const desc = getDescription(item);
-        const equip = getEquipment(item);
         const parLevel = getParLevel(item);
-        const belowPar = parLevel > 0 && qty < parLevel;
-        const descLine = desc + (equip ? ` \u2022 ${equip}` : '');
-        const disabled = !state.user.trim() ? 'disabled' : '';
-        const qtyClass = qty === 0 ? 'zero' : qty <= 5 ? 'low' : '';
-        const orderQty = state.poOrders[item.part_number] || 0;
         const card = document.createElement('div');
-        card.className = `part-card${belowPar ? ' below-par' : ''}`;
-        card.innerHTML = `
-            <span class="part-pn">${escapeHtml(item.part_number)}</span>
-            <span class="part-desc">${escapeHtml(descLine)}</span>
-            <span class="part-par"><span class="par-label">Par</span>${parLevel > 0 ? parLevel : '&mdash;'}</span>
-            <div class="part-controls">
-                <button class="btn-adj btn-sub" data-pn="${escapeAttr(item.part_number)}" data-action="subtract" ${disabled} title="Subtract">&#8722;</button>
-                <input class="part-qty-input ${qtyClass}" type="number" value="${qty}" min="0" data-pn="${escapeAttr(item.part_number)}" ${disabled} aria-label="Quantity for ${escapeAttr(item.part_number)}">
-                <button class="btn-adj btn-add" data-pn="${escapeAttr(item.part_number)}" data-action="add" ${disabled} title="Add">&#43;</button>
-            </div>
-            <div class="part-order" data-pn="${escapeAttr(item.part_number)}">
-                <span class="po-label">PO</span>
-                <span class="po-qty${orderQty > 0 ? ' active' : ''}">${orderQty > 0 ? orderQty : '&mdash;'}</span>
-                ${orderQty > 0 ? `<button class="btn-rcvd" data-pn="${escapeAttr(item.part_number)}" data-qty="${orderQty}" ${disabled}>Rcvd</button>` : ''}
-            </div>
-            ${state.splitView ? (() => {
-                const truckQty = getTruckQty(item.part_number);
-                const tqClass = truckQty === null ? 'none' : truckQty === 0 ? 'zero' : truckQty <= 5 ? 'low' : '';
-                const tqDisplay = truckQty !== null ? truckQty : '&mdash;';
-                return `<div class="truck-row">
-                    <span class="truck-row-label">&#128667; Truck:</span>
-                    <span class="truck-row-qty ${tqClass}" data-pn="${escapeAttr(item.part_number)}">${tqDisplay}</span>
-                    <button class="btn-xfer" data-pn="${escapeAttr(item.part_number)}" data-dir="to-shed" ${disabled} title="Move 1 from Truck to here">&#8592; Get</button>
-                    <button class="btn-xfer" data-pn="${escapeAttr(item.part_number)}" data-dir="to-truck" ${disabled} title="Move 1 from here to Truck">Send &#8594;</button>
-                </div>`;
-            })() : ''}`;
+        card.className = `part-card${parLevel > 0 && item.quantity < parLevel ? ' below-par' : ''}`;
+        card.innerHTML = buildCardHTML(item);
         frag.appendChild(card);
     });
     partsList.appendChild(frag);
@@ -670,7 +681,7 @@ partsList.addEventListener('click', async e => {
             if (item) item.quantity = data.quantity;
             updateCardDisplay(pn, data.quantity);
             state.poOrders[pn] = 0;
-            savePOOrders(state.location, state.poOrders);
+            await savePOOrders(state.location, state.poOrders);
             updateOrderDisplay(pn, 0);
             showToast(`Received ${orderQty}× ${pn} → ${data.quantity} in stock`);
         } catch {
@@ -880,7 +891,7 @@ async function generateReorderCsv(locNames) {
             continue;
         }
 
-        const locOrders = getPOOrders(locName);
+        const locOrders = await getPOOrders(locName);
         const belowPar = inventory.filter(item => {
             const p = getParLevel(item);
             const onOrder = locOrders[item.part_number] || 0;
@@ -950,7 +961,7 @@ async function generateEssReorderCsv(locNames) {
             continue;
         }
 
-        const locOrders = getPOOrders(locName);
+        const locOrders = await getPOOrders(locName);
         const belowPar = inventory.filter(item => {
             const p = getParLevel(item);
             const onOrder = locOrders[item.part_number] || 0;
@@ -1062,7 +1073,7 @@ btnPoUploadConfirm.addEventListener('click', () => {
     const file = inputPoFile.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = ev => {
+    reader.onload = async ev => {
         const parsed = parsePOCsv(ev.target.result);
         if (parsed === null) {
             poUploadError.textContent = 'Could not detect part number or quantity columns.';
@@ -1074,7 +1085,7 @@ btnPoUploadConfirm.addEventListener('click', () => {
             state.poOrders[pn] = (state.poOrders[pn] || 0) + qty;
             count++;
         });
-        savePOOrders(state.location, state.poOrders);
+        await savePOOrders(state.location, state.poOrders);
         poUploadError.classList.add('hidden');
         poUploadResult.textContent = `Loaded ${count} part${count === 1 ? '' : 's'} into on-order list.`;
         poUploadResult.classList.remove('hidden');
