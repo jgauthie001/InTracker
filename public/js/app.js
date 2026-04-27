@@ -184,6 +184,7 @@ async function loadLocations() {
         const locations = await res.json();
         selectLocation.innerHTML = '<option value="">— Select a Location —</option>';
         locations.sort().forEach(loc => {
+            if (loc.startsWith('truck_')) return; // truck locations only appear in truck mode
             const opt = document.createElement('option');
             opt.value = loc;
             opt.textContent = loc.replace(/_/g, ' ');
@@ -198,7 +199,7 @@ async function loadLocations() {
 
 // ─── Truck Dropdown Helpers ───────────────────────────────────────────────────
 function addTruckToDropdown() {
-    if (!state.truckLocation) return;
+    if (!state.truckLocation || !state.isTruckMode) return;
     let opt = selectLocation.querySelector('option[data-truck]');
     if (!opt) {
         opt = document.createElement('option');
