@@ -15,6 +15,7 @@ const state = {
     txnUserFilter: '',
     txnPartFilter: '',
     equipFilter: '',
+    dictFilter: '',
     sortKey: 'default',
     truckLocation: '',
     isTruckMode: false,
@@ -39,6 +40,7 @@ const partsList       = $('parts-list');
 const noResults       = $('no-results');
 const inputSearch          = $('input-search');
 const selectEquipFilter    = $('select-equipment-filter');
+const selectDictFilter     = $('select-dict-filter');
 const selectSort           = $('select-sort');
 const btnReorder           = $('btn-reorder');
 const splashText           = $('splash-text');
@@ -222,6 +224,22 @@ async function loadLocations() {
     } catch (err) {
         showToast('Failed to load locations');
     }
+}
+
+// ─── Parts Dictionary ─────────────────────────────────────────────────────────
+async function loadPartsDictionary() {
+    try {
+        const res = await fetch('/api/parts-dictionary');
+        if (!res.ok) return;
+        const dict = await res.json(); // [{abbreviation, term}, ...]
+        selectDictFilter.innerHTML = '<option value="">All Part Types</option>';
+        dict.forEach(({ abbreviation, term }) => {
+            const opt = document.createElement('option');
+            opt.value = abbreviation;
+            opt.textContent = term;
+            selectDictFilter.appendChild(opt);
+        });
+    } catch { /* silent — filter just won't populate */ }
 }
 
 // ─── Truck Dropdown Helpers ───────────────────────────────────────────────────
@@ -427,7 +445,9 @@ function renderInventory(filter = '') {
             getEquipment(item).toLowerCase().includes(term);
         const matchEquip = !state.equipFilter ||
             getEquipment(item) === state.equipFilter;
-        return matchSearch && matchEquip;
+        const matchDict = !state.dictFilter ||
+            getDescription(item).toLowerCase().includes(state.dictFilter.toLowerCase());
+        return matchSearch && matchEquip && matchDict;
     });
 
     // Sort
@@ -491,6 +511,11 @@ inputSearch.addEventListener('input', () => renderInventory(inputSearch.value));
 
 selectEquipFilter.addEventListener('change', () => {
     state.equipFilter = selectEquipFilter.value;
+    renderInventory(inputSearch.value);
+});
+
+selectDictFilter.addEventListener('change', () => {
+    state.dictFilter = selectDictFilter.value;
     renderInventory(inputSearch.value);
 });
 
@@ -1437,6 +1462,7 @@ function escapeAttr(str) {
     if (state.user.trim()) scheduleTruckDropdown();
 
     await loadLocations();
+    await loadPartsDictionary();
     updateHeaderHeight();
     window.addEventListener('resize', updateHeaderHeight);
 })();

@@ -131,6 +131,24 @@ app.get('/api/parts', async (req, res) => {
     }
 });
 
+// ─── API: Parts Dictionary ────────────────────────────────────────────────────
+
+app.get('/api/parts-dictionary', async (req, res) => {
+    try {
+        const dictFile = path.join(__dirname, 'Parts Dictionary.csv');
+        const text = await fsp.readFile(dictFile, 'utf8');
+        const { rows } = parseCSV(text);
+        const result = rows
+            .filter(r => r.Abbreviation && r.Term)
+            .map(r => ({ abbreviation: r.Abbreviation.trim(), term: r.Term.trim() }))
+            .sort((a, b) => a.term.localeCompare(b.term));
+        res.json(result);
+    } catch (err) {
+        if (err.code === 'ENOENT') return res.json([]); // no file = empty list
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // ─── API: Locations ───────────────────────────────────────────────────────────
 
 app.get('/api/locations', async (req, res) => {
