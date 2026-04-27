@@ -2,26 +2,16 @@
 
 ---
 
-## ⚠️ DEVELOPMENT ENVIRONMENT RULES — READ FIRST
+## Development Environment
 
-### 🚨 CRITICAL LESSON LEARNED (2026-03-25)
+All code lives in `E:\intracker\`. Both the development and production servers run from this single directory, differentiated only by environment variables:
 
-Multiple sessions of code changes were made directly to `E:\intracker\public\` (PRODUCTION) instead of this dev directory. The changes were functional but went live in production with zero testing. This was caught and manually synced but could have caused a broken production system or data loss.
+| Environment | Port | Data directory | Start script |
+|-------------|------|----------------|--------------|
+| Development | 3031 | `data-dev/`    | `START-DEV.bat` |
+| Production  | 3030 | `data/`        | `START.bat` |
 
-**Before editing ANY file, verify its path starts with `E:\intracker-dev\`. If it starts with `E:\intracker\` and NOT `E:\intracker-dev\`, STOP — you are editing production.**
-
----
-
-**This is the DEV directory (`E:\intracker-dev\`). All code edits happen here.**
-
-| Environment | Code directory | Data directory | Port |
-|-------------|----------------|---------------|------|
-| **Development** ✅ EDIT HERE | `E:\intracker-dev\` | `E:\intracker\data-dev\` | 3031 |
-| Production ❌ DO NOT EDIT | `E:\intracker\` | `E:\intracker\data\` | 3030 |
-
-- Edit frontend files only in `E:\intracker-dev\public\`.
-- After dev testing, copy changed files to `E:\intracker\public\` to deploy to production.
-- Data is always isolated: `data-dev/` for dev, `data/` for prod.
+Edit files directly in `E:\intracker\`. Restart whichever server you're testing against to pick up changes to `server.js`. Frontend static files (HTML/CSS/JS) are served from disk with no restart required.
 
 ---
 
@@ -53,6 +43,7 @@ E:\intracker\
 ├── START.bat               Production launcher (port 3030, data/)
 ├── START-DEV.bat           Development launcher (port 3031, data-dev/)
 ├── ARCHITECTURE.md         This file
+├── Parts Dictionary.csv    Abbreviation→Term lookup used by the filter dropdown
 ├── data/                   Production data
 │   ├── parts.csv           Master parts list (managed externally)
 │   ├── transactions.csv    Append-only transaction log (auto-created)
@@ -62,9 +53,9 @@ E:\intracker\
 │   └── locations/
 │       ├── <Name>.csv      One file per physical location
 │       └── truck_<user>.csv  Personal truck inventory per user (auto-created)
-├── data-dev/               Development data (separate from production)
+├── data-dev/               Development data (mirrors data/ structure)
 │   ├── parts.csv           Synced from data/ by START-DEV.bat on each launch
-│   └── locations/          (same structure as data/locations/)
+│   └── locations/
 └── public/
     ├── index.html
     ├── css/
@@ -348,14 +339,11 @@ The truck location does **not** appear in the main location dropdown by default.
 
 ## Running the App
 
+Both servers run from `E:\intracker\`. Edit files there directly.
+
 ### Production (port 3030)
 ```bat
 START.bat
-```
-Or manually:
-```bash
-npm install
-node server.js
 ```
 Server runs on port `3030` using `data/`. Users on the same network connect via `http://<machine-name>:3030`.
 
@@ -363,13 +351,9 @@ Server runs on port `3030` using `data/`. Users on the same network connect via 
 ```bat
 START-DEV.bat
 ```
-Or manually:
-```bash
-set PORT=3031
-set DATA_DIR=data-dev
-node server.js
-```
-Server runs on port `3031` using `data-dev/`. Completely isolated from production — separate locations, transactions, and backups. `START-DEV.bat` automatically syncs `data/parts.csv` → `data-dev/parts.csv` on each launch so the part catalog stays current.
+Server runs on port `3031` using `data-dev/`. Isolated from production — separate locations, transactions, and backups. `START-DEV.bat` automatically syncs `data/parts.csv` → `data-dev/parts.csv` on each launch so the part catalog stays current.
+
+Changes to `server.js` require restarting the server. Frontend files (`index.html`, `app.js`, `style.css`) are served directly from disk — no restart needed.
 
 ### Environment Variables
 | Variable   | Default  | Description                        |
