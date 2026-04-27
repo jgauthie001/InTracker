@@ -351,6 +351,7 @@ function applyOrderVisibility() {
     const hide = state.hideOrder || activeLocation().startsWith('truck_');
     viewInventory.classList.toggle('order-hidden', hide);
     btnExitPo.classList.toggle('hidden', state.hideOrder);
+    btnReorder.classList.toggle('hidden', state.hideOrder);
     const hdr = document.getElementById('parts-list-header');
     hdr.title = state.hideOrder ? '' : 'Click to rename this location';
 }
