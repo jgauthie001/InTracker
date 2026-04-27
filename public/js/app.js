@@ -16,12 +16,11 @@ const state = {
     txnPartFilter: '',
     equipFilter: '',
     sortKey: 'default',
-    truckVisible: false,
     truckLocation: '',
-    poMode: false,
-    poOrders: {},
+    isTruckMode: false,
+    locInventory: [],
     truckInventory: [],
-    splitView: false
+    hideOrder: true
 };
 
 // ─── DOM Refs ─────────────────────────────────────────────────────────────────
@@ -35,49 +34,26 @@ const btnTransactions = $('btn-transactions');
 const viewSplash      = $('view-splash');
 const viewInventory   = $('view-inventory');
 const viewTransactions= $('view-transactions');
+const viewTruck        = $('view-truck');
 const partsList       = $('parts-list');
 const noResults       = $('no-results');
 const inputSearch          = $('input-search');
 const selectEquipFilter    = $('select-equipment-filter');
 const selectSort           = $('select-sort');
 const btnReorder           = $('btn-reorder');
-const btnTruck             = $('btn-truck');
 const splashText           = $('splash-text');
-
-// PO Mode
-const appTitle             = $('app-title');
+const btnTruckStock        = $('btn-truck-stock');
 const btnExitPo            = $('btn-exit-po');
-const btnLocationInfo      = $('btn-location-info');
+const inputOrdersCsv       = $('input-orders-csv');
 
-// Location Info modal
-const modalLocationInfo    = $('modal-location-info');
-const locInfoCc            = $('loc-info-cc');
-const locInfoShed          = $('loc-info-shed');
-const locInfoLocationName  = $('loc-info-location-name');
-const locInfoAddress       = $('loc-info-address');
-const locInfoStreet        = $('loc-info-street');
-const locInfoCity          = $('loc-info-city');
-const locInfoState         = $('loc-info-state');
-const locInfoZip           = $('loc-info-zip');
-const btnLocInfoSave       = $('btn-loc-info-save');
-const btnLocInfoCancel     = $('btn-loc-info-cancel');
-
-// Reorder select modal
-const modalReorderSelect   = $('modal-reorder-select');
-const reorderLocList       = $('reorder-loc-list');
-const reorderError         = $('reorder-error');
-const btnReorderGenerate   = $('btn-reorder-generate');
-const btnReorderCancel     = $('btn-reorder-cancel');
-
-// Upload PO modal
-const btnUploadPo          = $('btn-upload-po');
-const modalUploadPo        = $('modal-upload-po');
-const inputPoFile          = $('input-po-file');
-const poFileName           = $('po-file-name');
-const poUploadResult       = $('po-upload-result');
-const poUploadError        = $('po-upload-error');
-const btnPoUploadConfirm   = $('btn-po-upload-confirm');
-const btnPoUploadCancel    = $('btn-po-upload-cancel');
+// Transfer modal
+const modalTransfer         = $('modal-transfer');
+const transferPnDisplay     = $('transfer-pn-display');
+const selectTransferLoc     = $('select-transfer-location');
+const inputTransferQty      = $('input-transfer-qty');
+const transferError         = $('transfer-error');
+const btnTransferConfirm    = $('btn-transfer-confirm');
+const btnTransferCancel     = $('btn-transfer-cancel');
 
 // New location modal
 const modalNewLocation   = $('modal-new-location');
@@ -85,6 +61,34 @@ const inputNewLocation   = $('input-new-location');
 const newLocError        = $('new-loc-error');
 const btnNewLocConfirm   = $('btn-new-loc-confirm');
 const btnNewLocCancel    = $('btn-new-loc-cancel');
+
+// Rename location modal
+const modalRenameLocation   = $('modal-rename-location');
+const inputRenameLocation   = $('input-rename-location');
+const renameLocCurrent      = $('rename-loc-current');
+const renameLocError        = $('rename-loc-error');
+const btnRenameLocConfirm   = $('btn-rename-loc-confirm');
+const btnRenameLocCancel    = $('btn-rename-loc-cancel');
+
+// Rename password modal
+const modalRenamePassword       = $('modal-rename-password');
+const inputRenamePassword       = $('input-rename-password');
+const renamePasswordError       = $('rename-password-error');
+const btnRenamePasswordConfirm  = $('btn-rename-password-confirm');
+const btnRenamePasswordCancel   = $('btn-rename-password-cancel');
+
+// Admin choice modal
+const modalAdminChoice      = $('modal-admin-choice');
+const btnAdminRename        = $('btn-admin-rename');
+const btnAdminNewLocation   = $('btn-admin-new-location');
+const btnAdminCancel        = $('btn-admin-cancel');
+
+// Reorder format modal
+const modalReorderSelect    = $('modal-reorder-select');
+const reorderLocList        = $('reorder-loc-list');
+const reorderError          = $('reorder-error');
+const btnReorderGenerate    = $('btn-reorder-generate');
+const btnReorderCancel      = $('btn-reorder-cancel');
 
 // Transaction log
 const txnList          = $('txn-list');
@@ -94,186 +98,18 @@ const txnSearchPart    = $('txn-search-part');
 const btnBack          = $('btn-back');
 
 const toast            = $('toast');
-const btnTheme         = $('btn-theme');
 
-// ─── Theme ────────────────────────────────────────────────────────────────────
-(function initTheme() {
-    if (localStorage.getItem('intracker_theme') === 'light') {
-        document.documentElement.classList.add('light');
-    }
-})();
-
-btnTheme.addEventListener('click', () => {
-    const isLight = document.documentElement.classList.toggle('light');
-    localStorage.setItem('intracker_theme', isLight ? 'light' : 'dark');
-});
-
-// Truck mode panel header (shown when viewing a non-truck location in truck mode)
-const warehousePanelHeader = $('warehouse-panel-header');
-const warehousePanelTitle  = $('warehouse-panel-title');
-const warehousePanelCount  = $('warehouse-panel-count');
-
-// ─── Truck Visibility ────────────────────────────────────────────────────────
-function applyTruckVisibility() {
-    const visible = state.truckVisible;
-    btnTruck.classList.toggle('hidden', !visible);
-
-    const existing = selectLocation.querySelector('option[data-truck="1"]');
-    if (visible && state.truckLocation) {
-        if (!existing) {
-            const opt = document.createElement('option');
-            opt.value = state.truckLocation;
-            opt.textContent = '\uD83D\uDE9B My Truck';
-            opt.dataset.truck = '1';
-            selectLocation.appendChild(opt);
-        }
-    } else if (existing) {
-        if (state.location === existing.value) {
-            state.location = '';
-            selectLocation.value = '';
-            showView(viewSplash);
-            splashText.textContent = 'Select a location to view inventory.';
-        }
-        existing.remove();
-    }
-
-    btnTruck.disabled = !state.user.trim() || !state.truckLocation;
-
-    // If a non-truck location is already selected, enter/exit split view
-    if (state.truckVisible && state.truckLocation && state.location && state.location !== state.truckLocation) {
-        loadSplitView();
-    } else if (!state.truckVisible && state.splitView) {
-        exitSplitView();
-        renderInventory(inputSearch.value);
-    }
+// ─── Active location helper ────────────────────────────────────────────────────
+function activeLocation() {
+    return state.isTruckMode ? state.truckLocation : state.location;
 }
 
-let truckDropdownTimer;
-function scheduleTruckDropdown() {
-    clearTimeout(truckDropdownTimer);
-    const name = state.user.trim();
-    if (!name) {
-        const existing = selectLocation.querySelector('option[data-truck="1"]');
-        if (existing) existing.remove();
-        state.truckLocation = '';
-        btnTruck.disabled = true;
-        return;
-    }
-    truckDropdownTimer = setTimeout(async () => {
-        try {
-            const res = await fetch(`/api/truck/${encodeURIComponent(name)}`);
-            if (!res.ok) return;
-            const data = await res.json();
-            state.truckLocation = data.location;
-            applyTruckVisibility();
-        } catch { /* silent */ }
-    }, 600);
+// ─── Parts list header text ──────────────────────────────────────────────────
+function updatePartsListHeader() {
+    const isTruck = state.isTruckMode || activeLocation().startsWith('truck_');
+    const spans = document.querySelectorAll('#parts-list-header span');
+    if (spans[3]) spans[3].textContent = isTruck ? 'Truck QTY' : 'Shed QTY on Hand';
 }
-
-// ─── PO Mode ─────────────────────────────────────────────────────────────────
-function applyPoMode() {
-    appTitle.classList.toggle('po-active', state.poMode);
-    appTitle.title = state.poMode ? 'PO Entry Mode active' : 'Click to enter PO Entry Mode';
-    btnExitPo.classList.toggle('hidden', !state.poMode);
-    btnLocationInfo.classList.toggle('hidden', !state.poMode);
-    btnUploadPo.classList.toggle('hidden', !state.poMode);
-    btnReorder.classList.toggle('hidden', !state.poMode);
-    viewInventory.classList.toggle('po-mode', state.poMode);
-    updateHeaderHeight();
-}
-
-appTitle.addEventListener('click', () => {
-    state.poMode = !state.poMode;
-    applyPoMode();
-    showToast(state.poMode ? 'PO Entry Mode on' : 'PO Entry Mode off');
-});
-
-btnExitPo.addEventListener('click', () => {
-    state.poMode = false;
-    applyPoMode();
-    showToast('PO Entry Mode off');
-});
-
-// ─── Location Info (localStorage) ────────────────────────────────────────────
-function getLocInfo(locName) {
-    try {
-        const all = JSON.parse(localStorage.getItem('intracker_loc_info') || '{}');
-        return all[locName] || {};
-    } catch { return {}; }
-}
-
-function saveLocInfo(locName, info) {
-    try {
-        const all = JSON.parse(localStorage.getItem('intracker_loc_info') || '{}');
-        all[locName] = info;
-        localStorage.setItem('intracker_loc_info', JSON.stringify(all));
-    } catch { /* silent */ }
-}
-
-// ─── PO Orders (server-side, per-location) ─────────────────────────────────
-async function getPOOrders(locName) {
-    try {
-        const res = await fetch(`/api/po/${encodeURIComponent(locName)}`);
-        if (!res.ok) return {};
-        return await res.json();
-    } catch { return {}; }
-}
-
-async function savePOOrders(locName, orders) {
-    try {
-        const cleaned = {};
-        Object.entries(orders).forEach(([k, v]) => { if (v > 0) cleaned[k] = v; });
-        await fetch(`/api/po/${encodeURIComponent(locName)}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ orders: cleaned })
-        });
-    } catch { /* silent */ }
-}
-
-// ─── Location Info Modal ──────────────────────────────────────────────────────
-function openLocationInfoModal() {
-    const info = getLocInfo(state.location);
-    locInfoCc.value           = info.cc           || '';
-    locInfoShed.value         = info.shed         || '';
-    locInfoLocationName.value = info.locationName || '';
-    locInfoAddress.value      = info.address      || '';
-    locInfoStreet.value  = info.street  || '';
-    locInfoCity.value    = info.city    || '';
-    locInfoState.value   = info.state   || '';
-    locInfoZip.value     = info.zip     || '';
-    modalLocationInfo.classList.remove('hidden');
-    setTimeout(() => locInfoCc.focus(), 100);
-}
-
-btnLocationInfo.addEventListener('click', () => {
-    if (!state.location) { showToast('Select a location first'); return; }
-    openLocationInfoModal();
-});
-
-btnLocInfoSave.addEventListener('click', () => {
-    if (!state.location) return;
-    saveLocInfo(state.location, {
-        cc:           locInfoCc.value.trim(),
-        shed:         locInfoShed.value.trim(),
-        locationName: locInfoLocationName.value.trim(),
-        address:      locInfoAddress.value.trim(),
-        street:  locInfoStreet.value.trim(),
-        city:    locInfoCity.value.trim(),
-        state:   locInfoState.value.trim(),
-        zip:     locInfoZip.value.trim()
-    });
-    modalLocationInfo.classList.add('hidden');
-    showToast('Location info saved');
-});
-
-btnLocInfoCancel.addEventListener('click', () => {
-    modalLocationInfo.classList.add('hidden');
-});
-
-modalLocationInfo.addEventListener('click', e => {
-    if (e.target === modalLocationInfo) modalLocationInfo.classList.add('hidden');
-});
 
 // ─── Header height recalculation ──────────────────────────────────────────────
 function updateHeaderHeight() {
@@ -292,7 +128,7 @@ function showToast(msg, duration = 2500) {
 
 // ─── View Switcher ────────────────────────────────────────────────────────────
 function showView(view) {
-    [viewSplash, viewInventory, viewTransactions].forEach(v => v.classList.remove('active'));
+    [viewSplash, viewInventory, viewTransactions, viewTruck].forEach(v => v.classList.remove('active'));
     view.classList.add('active');
 }
 
@@ -306,6 +142,7 @@ function applyUserState() {
         selectLocation.disabled = false;
         btnNewLocation.disabled = false;
         btnTransactions.disabled = false;
+        btnTruckStock.disabled = false;
         if (!state.location) {
             splashText.textContent = 'Select a location to view inventory.';
         }
@@ -316,13 +153,20 @@ function applyUserState() {
         selectLocation.disabled = true;
         btnNewLocation.disabled = true;
         btnTransactions.disabled = true;
-        btnTruck.disabled = true;
+        btnTruckStock.disabled = true;
+        if (state.isTruckMode) {
+            state.isTruckMode = false;
+            state.locInventory = [];
+            state.truckInventory = [];
+            btnTruckStock.classList.remove('active');
+        }
+        state.truckLocation = '';
+        removeDropdownTruck();
         splashText.textContent = 'Enter your name above to get started.';
         showView(viewSplash);
         state.location = '';
         selectLocation.value = '';
     }
-    scheduleTruckDropdown();
     updateHeaderHeight();
 }
 
@@ -330,6 +174,7 @@ inputUser.addEventListener('input', () => {
     state.user = inputUser.value;
     localStorage.setItem('intracker_user', state.user);
     applyUserState();
+    scheduleTruckDropdown();
 });
 
 // ─── Locations ────────────────────────────────────────────────────────────────
@@ -344,24 +189,60 @@ async function loadLocations() {
             opt.textContent = loc.replace(/_/g, ' ');
             selectLocation.appendChild(opt);
         });
+        addTruckToDropdown();
         if (state.location) selectLocation.value = state.location;
-        applyTruckVisibility(); // re-inject My Truck option if visible
     } catch (err) {
         showToast('Failed to load locations');
     }
 }
 
+// ─── Truck Dropdown Helpers ───────────────────────────────────────────────────
+function addTruckToDropdown() {
+    if (!state.truckLocation) return;
+    let opt = selectLocation.querySelector('option[data-truck]');
+    if (!opt) {
+        opt = document.createElement('option');
+        opt.dataset.truck = '1';
+        selectLocation.appendChild(opt);
+    }
+    opt.value = state.truckLocation;
+    opt.textContent = '\uD83D\uDE9B My Truck';
+    if (state.location === state.truckLocation) selectLocation.value = state.truckLocation;
+}
+
+function removeDropdownTruck() {
+    const opt = selectLocation.querySelector('option[data-truck]');
+    if (opt) opt.remove();
+}
+
+let truckDropdownTimer;
+function scheduleTruckDropdown() {
+    clearTimeout(truckDropdownTimer);
+    if (!state.user.trim()) { removeDropdownTruck(); return; }
+    truckDropdownTimer = setTimeout(async () => {
+        if (!state.user.trim()) return;
+        try {
+            const res = await fetch(`/api/truck/${encodeURIComponent(state.user.trim())}`);
+            const data = await res.json();
+            if (!res.ok) return;
+            state.truckLocation = data.location;
+            addTruckToDropdown();
+        } catch {}
+    }, 600);
+}
+
 selectLocation.addEventListener('change', () => {
+    // Selecting from dropdown exits truck transfer mode
+    if (state.isTruckMode) {
+        state.isTruckMode = false;
+        state.locInventory = [];
+        state.truckInventory = [];
+        btnTruckStock.classList.remove('active');
+    }
     state.location = selectLocation.value;
     if (state.location) {
-        if (state.truckVisible && state.truckLocation && state.location !== state.truckLocation) {
-            loadSplitView();
-        } else {
-            exitSplitView();
-            loadInventory();
-        }
+        loadInventory();
     } else {
-        exitSplitView();
         showView(viewSplash);
         splashText.textContent = 'Select a location to view inventory.';
     }
@@ -409,68 +290,69 @@ btnNewLocConfirm.addEventListener('click', async () => {
 
 inputNewLocation.addEventListener('keydown', e => { if (e.key === 'Enter') btnNewLocConfirm.click(); });
 
-// ─── Split View helpers ───────────────────────────────────────────────────────
-function exitSplitView() {
-    state.splitView = false;
-    state.truckInventory = [];
-    warehousePanelHeader.classList.add('hidden');
-    warehousePanelCount.textContent = '';
-}
+// ─── Rename Location Modal ───────────────────────────────────────────────────
+btnRenameLocCancel.addEventListener('click', () => {
+    modalRenameLocation.classList.add('hidden');
+});
 
-async function loadSplitView() {
-    partsList.innerHTML = '<div class="splash-message"><div class="splash-icon">&#8635;</div><p>Loading&#8230;</p></div>';
-    showView(viewInventory);
+btnRenameLocConfirm.addEventListener('click', async () => {
+    const newName = inputRenameLocation.value.trim();
+    if (!newName) { renameLocError.textContent = 'Please enter a name.'; renameLocError.classList.remove('hidden'); return; }
+
+    const oldName = state.location;
+    btnRenameLocConfirm.disabled = true;
     try {
-        const [whRes, trRes] = await Promise.all([
-            fetch(`/api/inventory/${encodeURIComponent(state.location)}`),
-            fetch(`/api/inventory/${encodeURIComponent(state.truckLocation)}`)
-        ]);
-        const [whData, trData] = await Promise.all([whRes.json(), trRes.json()]);
-        if (!whRes.ok || !trRes.ok) {
-            showToast('Failed to load one or more inventories');
-            showView(viewSplash);
-            return;
-        }
-        state.inventory      = whData.inventory;
-        state.partsHeaders   = whData.partsHeaders;
-        state.truckInventory = trData.inventory;
-        state.poOrders       = await getPOOrders(state.location);
-        state.splitView      = true;
+        const res = await fetch(`/api/locations/${encodeURIComponent(oldName)}/rename`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ newName, user: state.user })
+        });
+        const data = await res.json();
+        if (!res.ok) { renameLocError.textContent = data.error; renameLocError.classList.remove('hidden'); return; }
 
-        warehousePanelTitle.textContent = '\uD83C\uDFED ' + state.location.replace(/_/g, ' ') +
-            '  \u2194  \uD83D\uDE9B ' + state.truckLocation.replace(/_/g, ' ');
-        warehousePanelHeader.classList.remove('hidden');
-
-        populateEquipmentFilter();
-        renderInventory(inputSearch.value);
+        modalRenameLocation.classList.add('hidden');
+        state.location = data.newName;
+        await loadLocations();
+        selectLocation.value = data.newName;
+        await loadInventory();
+        showToast(`Renamed to "${data.newName.replace(/_/g, ' ')}"`);
     } catch {
-        showToast('Failed to load inventory');
-        showView(viewSplash);
+        renameLocError.textContent = 'Server error. Please try again.';
+        renameLocError.classList.remove('hidden');
+    } finally {
+        btnRenameLocConfirm.disabled = false;
     }
-}
+});
 
-function getTruckQty(pn) {
-    const item = state.truckInventory.find(i => i.part_number === pn);
-    return item ? item.quantity : null;
-}
+inputRenameLocation.addEventListener('keydown', e => { if (e.key === 'Enter') btnRenameLocConfirm.click(); });
 
 // ─── Inventory ────────────────────────────────────────────────────────────────
 async function loadInventory() {
     partsList.innerHTML = '<div class="splash-message"><div class="splash-icon">&#8635;</div><p>Loading...</p></div>';
     showView(viewInventory);
+    const locationToLoad = activeLocation();
     try {
-        const res = await fetch(`/api/inventory/${encodeURIComponent(state.location)}`);
+        const res = await fetch(`/api/inventory/${encodeURIComponent(locationToLoad)}`);
         const data = await res.json();
         if (!res.ok) { showToast(data.error || 'Failed to load inventory'); showView(viewSplash); return; }
         state.inventory = data.inventory;
         state.partsHeaders = data.partsHeaders;
-        state.poOrders = await getPOOrders(state.location);
+        updatePartsListHeader();
         populateEquipmentFilter();
         renderInventory();
+        applyOrderVisibility();
     } catch {
         showToast('Failed to load inventory');
         showView(viewSplash);
     }
+}
+
+function applyOrderVisibility() {
+    const hide = state.hideOrder || activeLocation().startsWith('truck_');
+    viewInventory.classList.toggle('order-hidden', hide);
+    btnExitPo.classList.toggle('hidden', state.hideOrder);
+    const hdr = document.getElementById('parts-list-header');
+    hdr.title = state.hideOrder ? '' : 'Click to rename this location';
 }
 
 function populateEquipmentFilter() {
@@ -506,46 +388,6 @@ function getParLevel(item) {
     return key ? parseInt(item[key], 10) || 0 : 0;
 }
 
-// ─── Card HTML builders ───────────────────────────────────────────────────────
-function buildTruckRowHTML(pn, disabled) {
-    const truckQty  = getTruckQty(pn);
-    const tqClass   = truckQty === null ? 'none' : truckQty === 0 ? 'zero' : truckQty <= 5 ? 'low' : '';
-    const tqDisplay = truckQty !== null ? truckQty : '&mdash;';
-    return `<div class="truck-row">
-                    <span class="truck-row-label">&#128667; Truck:</span>
-                    <span class="truck-row-qty ${tqClass}" data-pn="${escapeAttr(pn)}">${tqDisplay}</span>
-                    <button class="btn-xfer" data-pn="${escapeAttr(pn)}" data-dir="to-shed" ${disabled} title="Move 1 from Truck to here">&#8592; Get</button>
-                    <button class="btn-xfer" data-pn="${escapeAttr(pn)}" data-dir="to-truck" ${disabled} title="Move 1 from here to Truck">Send &#8594;</button>
-                </div>`;
-}
-
-function buildCardHTML(item) {
-    const qty      = item.quantity;
-    const desc     = getDescription(item);
-    const equip    = getEquipment(item);
-    const parLevel = getParLevel(item);
-    const descLine = desc + (equip ? ` \u2022 ${equip}` : '');
-    const disabled = !state.user.trim() ? 'disabled' : '';
-    const qtyClass = qty === 0 ? 'zero' : qty <= 5 ? 'low' : '';
-    const orderQty = state.poOrders[item.part_number] || 0;
-    const pn       = item.part_number;
-    return `
-            <span class="part-pn">${escapeHtml(pn)}</span>
-            <span class="part-desc">${escapeHtml(descLine)}</span>
-            <span class="part-par"><span class="par-label">Par</span>${parLevel > 0 ? parLevel : '&mdash;'}</span>
-            <div class="part-controls">
-                <button class="btn-adj btn-sub" data-pn="${escapeAttr(pn)}" data-action="subtract" ${disabled} title="Subtract">&#8722;</button>
-                <input class="part-qty-input ${qtyClass}" type="number" value="${qty}" min="0" data-pn="${escapeAttr(pn)}" ${disabled} aria-label="Quantity for ${escapeAttr(pn)}">
-                <button class="btn-adj btn-add" data-pn="${escapeAttr(pn)}" data-action="add" ${disabled} title="Add">&#43;</button>
-            </div>
-            <div class="part-order" data-pn="${escapeAttr(pn)}">
-                <span class="po-label">PO</span>
-                <span class="po-qty${orderQty > 0 ? ' active' : ''}">${orderQty > 0 ? orderQty : '&mdash;'}</span>
-                ${orderQty > 0 ? `<button class="btn-rcvd" data-pn="${escapeAttr(pn)}" data-qty="${orderQty}" ${disabled}>Rcvd</button>` : ''}
-            </div>
-            ${state.splitView ? buildTruckRowHTML(pn, disabled) : ''}`;
-}
-
 function renderInventory(filter = '') {
     const term = filter.toLowerCase().trim();
 
@@ -577,18 +419,40 @@ function renderInventory(filter = '') {
     partsList.innerHTML = '';
     if (filtered.length === 0) {
         noResults.classList.remove('hidden');
-        if (state.splitView) warehousePanelCount.textContent = '(0 parts)';
         return;
     }
     noResults.classList.add('hidden');
-    if (state.splitView) warehousePanelCount.textContent = `(${filtered.length} part${filtered.length === 1 ? '' : 's'})`;
 
     const frag = document.createDocumentFragment();
     filtered.forEach(item => {
+        const qty = item.quantity;
+        const desc = getDescription(item);
+        const equip = getEquipment(item);
         const parLevel = getParLevel(item);
+        const onOrder = item.on_order || 0;
+        const belowPar = !state.isTruckMode && parLevel > 0 && qty < parLevel;
+        const descLine = desc + (equip ? ` \u2022 ${equip}` : '');
+        const disabled = !state.user ? 'disabled' : '';
+        const qtyClass = qty === 0 ? 'zero' : qty <= 5 ? 'low' : '';
+        const orderClass = onOrder > 0 ? ' has-order' : '';
+        const parDisplay = (!state.isTruckMode && parLevel > 0) ? parLevel : '&mdash;';
         const card = document.createElement('div');
-        card.className = `part-card${parLevel > 0 && item.quantity < parLevel ? ' below-par' : ''}`;
-        card.innerHTML = buildCardHTML(item);
+        card.className = `part-card${belowPar ? ' below-par' : ''}`;
+        card.innerHTML = `
+            <span class="part-pn">${escapeHtml(item.part_number)}</span>
+            <span class="part-desc">${escapeHtml(descLine)}</span>
+            <span class="part-par"><span class="par-label">Par</span>${parDisplay}</span>
+            <span class="part-order${orderClass}" data-pn="${escapeAttr(item.part_number)}">
+                <span class="order-label">On Ord</span>
+                ${onOrder > 0 ? onOrder : '&mdash;'}
+                ${onOrder > 0 ? `<button class="btn-receive" data-pn="${escapeAttr(item.part_number)}" ${disabled} title="Receive ${onOrder} unit(s) into current location">&#10003; Rcv</button>` : ''}
+            </span>
+            <div class="part-controls">
+                <button class="btn-adj btn-sub" data-pn="${escapeAttr(item.part_number)}" data-action="subtract" ${disabled} title="Subtract">&#8722;</button>
+                <input class="part-qty-input ${qtyClass}" type="number" value="${qty}" min="0" data-pn="${escapeAttr(item.part_number)}" ${disabled} aria-label="Quantity for ${escapeAttr(item.part_number)}">
+                <button class="btn-adj btn-add" data-pn="${escapeAttr(item.part_number)}" data-action="add" ${disabled} title="Add">&#43;</button>
+            </div>
+            `;
         frag.appendChild(card);
     });
     partsList.appendChild(frag);
@@ -607,7 +471,7 @@ selectSort.addEventListener('change', () => {
 });
 
 // ─── Card Display Update Helper ───────────────────────────────────────────────
-function updateCardDisplay(pn, newQty) {
+function updateCardDisplay(pn, newQty, newOnOrder) {
     const input = partsList.querySelector(`.part-qty-input[data-pn="${escapeAttr(pn)}"]`);
     if (!input) return;
     input.value = newQty;
@@ -616,24 +480,23 @@ function updateCardDisplay(pn, newQty) {
     const card = input.closest('.part-card');
     if (card && item) {
         const parLevel = getParLevel(item);
-        card.classList.toggle('below-par', parLevel > 0 && newQty < parLevel);
+        card.classList.toggle('below-par', !state.isTruckMode && parLevel > 0 && newQty < parLevel);
+        if (newOnOrder !== undefined) {
+            const orderSpan = card.querySelector(`.part-order[data-pn="${escapeAttr(pn)}"]`);
+            if (orderSpan) {
+                const disabled = !state.user ? 'disabled' : '';
+                orderSpan.className = `part-order${newOnOrder > 0 ? ' has-order' : ''}`;
+                orderSpan.innerHTML = `<span class="order-label">On Ord</span>
+                    ${newOnOrder > 0 ? newOnOrder : '&mdash;'}
+                    ${newOnOrder > 0 ? `<button class="btn-receive" data-pn="${escapeAttr(pn)}" ${disabled} title="Receive ${newOnOrder} unit(s) into current location">&#10003; Rcv</button>` : ''}`;
+            }
+        }
     }
-}
-
-// ─── PO Order Display Update Helper ───────────────────────────────────────────
-function updateOrderDisplay(pn, newOrderQty) {
-    const cell = partsList.querySelector(`.part-order[data-pn="${escapeAttr(pn)}"]`);
-    if (!cell) return;
-    const disabled = !state.user.trim() ? 'disabled' : '';
-    cell.innerHTML = `
-        <span class="po-label">PO</span>
-        <span class="po-qty${newOrderQty > 0 ? ' active' : ''}">${newOrderQty > 0 ? newOrderQty : '&mdash;'}</span>
-        ${newOrderQty > 0 ? `<button class="btn-rcvd" data-pn="${escapeAttr(pn)}" data-qty="${newOrderQty}" ${disabled}>Rcvd</button>` : ''}`;
 }
 
 // ─── Direct Adjust (+ / - buttons) ───────────────────────────────────────────
 async function sendAdjust(part_number, action, quantity) {
-    const res = await fetch(`/api/inventory/${encodeURIComponent(state.location)}/adjust`, {
+    const res = await fetch(`/api/inventory/${encodeURIComponent(activeLocation())}/adjust`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ part_number, action, quantity, user: state.user.trim() })
@@ -641,101 +504,36 @@ async function sendAdjust(part_number, action, quantity) {
     return res.json().then(data => ({ ok: res.ok, data }));
 }
 
-// ─── Parts list click handler (adj / rcvd / xfer) ────────────────────────────
 partsList.addEventListener('click', async e => {
-    if (e.target.closest('.btn-adj')) {
-        const btn = e.target.closest('.btn-adj');
-        if (!state.user.trim()) { showToast('Please enter your name first'); return; }
+    // Receive button
+    const rcvBtn = e.target.closest('.btn-receive');
+    if (rcvBtn) { await handleReceive(rcvBtn.dataset.pn, rcvBtn); return; }
 
-        const pn = btn.dataset.pn;
-        const action = btn.dataset.action;
-        const item = state.inventory.find(i => i.part_number === pn);
-        if (!item) return;
+    // Transfer button
+    const tfBtn = e.target.closest('.btn-transfer');
+    if (tfBtn) { openTransferModal(tfBtn.dataset.pn); return; }
 
-        btn.disabled = true;
-        try {
-            const { ok, data } = await sendAdjust(pn, action, 1);
-            if (!ok) { showToast(data.error || 'Error adjusting quantity', 3000); return; }
-            item.quantity = data.quantity;
-            updateCardDisplay(pn, data.quantity);
-            showToast(`${action === 'add' ? '+1' : '-1'} ${pn} → ${data.quantity}`);
-        } catch {
-            showToast('Server error. Please try again.', 3000);
-        } finally {
-            btn.disabled = false;
-        }
-        return;
-    }
+    const btn = e.target.closest('.btn-adj');
+    if (!btn) return;
+    if (!state.user.trim()) { showToast('Please enter your name first'); return; }
 
-    if (e.target.closest('.btn-rcvd')) {
-        const btn = e.target.closest('.btn-rcvd');
-        if (!state.user.trim()) { showToast('Please enter your name first'); return; }
-        const pn = btn.dataset.pn;
-        const orderQty = parseInt(btn.dataset.qty, 10);
-        if (!pn || isNaN(orderQty) || orderQty <= 0) return;
-        btn.disabled = true;
-        try {
-            const { ok, data } = await sendAdjust(pn, 'add', orderQty);
-            if (!ok) { showToast(data.error || 'Error receiving qty', 3000); btn.disabled = false; return; }
-            const item = state.inventory.find(i => i.part_number === pn);
-            if (item) item.quantity = data.quantity;
-            updateCardDisplay(pn, data.quantity);
-            state.poOrders[pn] = 0;
-            await savePOOrders(state.location, state.poOrders);
-            updateOrderDisplay(pn, 0);
-            showToast(`Received ${orderQty}× ${pn} → ${data.quantity} in stock`);
-        } catch {
-            showToast('Server error. Please try again.', 3000);
-        } finally {
-            btn.disabled = false;
-        }
-        return;
-    }
+    const pn = btn.dataset.pn;
+    const action = btn.dataset.action;
+    const item = state.inventory.find(i => i.part_number === pn);
+    if (!item) return;
 
-    if (e.target.closest('.btn-xfer')) {
-        const btn = e.target.closest('.btn-xfer');
-        if (btn.disabled) return;
-        if (!state.user.trim()) { showToast('Please enter your name first'); return; }
-
-        const pn  = btn.dataset.pn;
-        const dir = btn.dataset.dir;
-        // dir="to-shed" means truck → this location; dir="to-truck" means this location → truck
-        const isTruckToShed = dir === 'to-shed';
-        const fromLoc = isTruckToShed ? state.truckLocation : state.location;
-        const toLoc   = isTruckToShed ? state.location      : state.truckLocation;
-
-        // Check available qty in source inventory
-        const fromInv  = isTruckToShed ? state.truckInventory : state.inventory;
-        const fromItem = fromInv.find(i => i.part_number === pn);
-        if (!fromItem || fromItem.quantity <= 0) {
-            showToast('None available to transfer', 2500);
-            return;
-        }
-
-        btn.disabled = true;
-        const { ok, data } = await sendTransfer(fromLoc, toLoc, pn, 1);
+    btn.disabled = true;
+    try {
+        const { ok, data } = await sendAdjust(pn, action, 1);
+        if (!ok) { showToast(data.error || 'Error adjusting quantity', 3000); return; }
+        item.quantity = data.quantity;
+        if (data.on_order !== undefined) item.on_order = data.on_order;
+        updateCardDisplay(pn, data.quantity, data.on_order);
+        showToast(`${action === 'add' ? '+1' : '-1'} ${pn} → ${data.quantity}`);
+    } catch {
+        showToast('Server error. Please try again.', 3000);
+    } finally {
         btn.disabled = false;
-
-        if (!ok) {
-            showToast(data.error || 'Transfer failed', 3000);
-            return;
-        }
-
-        // Update state
-        const truckItem = state.truckInventory.find(i => i.part_number === pn);
-        const shedItem  = state.inventory.find(i => i.part_number === pn);
-        if (isTruckToShed) {
-            if (truckItem) truckItem.quantity = data.from.quantity;
-            if (shedItem)  shedItem.quantity  = data.to.quantity;
-            updateCardDisplay(pn, data.to.quantity);
-            updateTruckRowQty(pn, data.from.quantity);
-        } else {
-            if (shedItem)  shedItem.quantity  = data.from.quantity;
-            if (truckItem) truckItem.quantity = data.to.quantity;
-            updateCardDisplay(pn, data.from.quantity);
-            updateTruckRowQty(pn, data.to.quantity);
-        }
-        showToast(`Transferred 1\u00d7 ${pn}`);
     }
 });
 
@@ -765,7 +563,8 @@ partsList.addEventListener('change', async e => {
             return;
         }
         item.quantity = data.quantity;
-        updateCardDisplay(pn, data.quantity);
+        if (data.on_order !== undefined) item.on_order = data.on_order;
+        updateCardDisplay(pn, data.quantity, data.on_order);
         showToast(`${pn} → ${data.quantity} in stock`);
     } catch {
         showToast('Server error. Please try again.', 3000);
@@ -787,8 +586,14 @@ function csvEscape(val) {
         ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+function getLocInfo(locName) {
+    try {
+        const all = JSON.parse(localStorage.getItem('intracker_loc_info') || '{}');
+        return all[locName] || {};
+    } catch { return {}; }
+}
+
 btnReorder.addEventListener('click', () => {
-    // Gather all non-truck locations from the dropdown
     const locOptions = [...selectLocation.options].filter(o =>
         o.value && !o.value.startsWith('truck_') && !o.dataset.truck
     );
@@ -870,13 +675,11 @@ btnReorderGenerate.addEventListener('click', async () => {
 
 async function generateReorderCsv(locNames) {
     const date = new Date().toISOString().slice(0, 10);
-    const COLS = 12; // total columns
+    const COLS = 12;
     const empty = () => Array(COLS).fill('');
-
     const headerRow = ['CC#', 'Deliver To', 'Location Name', 'Address', 'Street', 'City', 'State', 'Zip',
                        'Date Submitted', '', 'part_number', 'quantity_required'];
     const lines = [headerRow.map(csvEscape).join(',')];
-
     let totalParts = 0;
 
     for (const locName of locNames) {
@@ -891,16 +694,13 @@ async function generateReorderCsv(locNames) {
             continue;
         }
 
-        const locOrders = await getPOOrders(locName);
         const belowPar = inventory.filter(item => {
             const p = getParLevel(item);
-            const onOrder = locOrders[item.part_number] || 0;
+            const onOrder = item.on_order || 0;
             return p > 0 && (item.quantity + onOrder) < p;
         });
-
         if (belowPar.length === 0) continue;
 
-        // Location info row
         const info = getLocInfo(locName);
         const locRow = empty();
         locRow[0] = info.cc           || '';
@@ -914,9 +714,8 @@ async function generateReorderCsv(locNames) {
         locRow[8] = date;
         lines.push(locRow.map(csvEscape).join(','));
 
-        // Parts rows
         belowPar.forEach(item => {
-            const onOrder = locOrders[item.part_number] || 0;
+            const onOrder = item.on_order || 0;
             const needed = getParLevel(item) - item.quantity - onOrder;
             const partRow = empty();
             partRow[10] = item.part_number;
@@ -926,10 +725,7 @@ async function generateReorderCsv(locNames) {
         });
     }
 
-    if (lines.length === 1) {
-        showToast('No parts below par in selected locations', 3000);
-        return;
-    }
+    if (lines.length === 1) { showToast('No parts below par in selected locations', 3000); return; }
 
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -938,7 +734,6 @@ async function generateReorderCsv(locNames) {
     a.download = `reorder_${date}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-
     modalReorderSelect.classList.add('hidden');
     showToast(`Reorder CSV downloaded (${totalParts} part${totalParts === 1 ? '' : 's'} across ${locNames.length} location${locNames.length === 1 ? '' : 's'})`);
 }
@@ -961,25 +756,21 @@ async function generateEssReorderCsv(locNames) {
             continue;
         }
 
-        const locOrders = await getPOOrders(locName);
         const belowPar = inventory.filter(item => {
             const p = getParLevel(item);
-            const onOrder = locOrders[item.part_number] || 0;
+            const onOrder = item.on_order || 0;
             return p > 0 && (item.quantity + onOrder) < p;
         });
 
         belowPar.forEach(item => {
-            const onOrder = locOrders[item.part_number] || 0;
+            const onOrder = item.on_order || 0;
             const needed = getParLevel(item) - item.quantity - onOrder;
             lines.push([item.part_number, getDescription(item), String(needed)].map(csvEscape).join(','));
             totalParts++;
         });
     }
 
-    if (lines.length === 1) {
-        showToast('No parts below par in selected locations', 3000);
-        return;
-    }
+    if (lines.length === 1) { showToast('No parts below par in selected locations', 3000); return; }
 
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -988,152 +779,388 @@ async function generateEssReorderCsv(locNames) {
     a.download = `reorder_ess_${date}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-
     modalReorderSelect.classList.add('hidden');
     showToast(`ES&S CSV downloaded (${totalParts} part${totalParts === 1 ? '' : 's'})`);
 }
 
-// ─── Upload PO CSV ────────────────────────────────────────────────────────────────────────
-function parsePOCsv(text) {
-    // Split a single CSV line respecting quoted fields
-    function splitLine(line) {
-        const cols = [];
-        let field = '', inQuote = false;
-        for (let i = 0; i < line.length; i++) {
-            const ch = line[i];
-            if (ch === '"') { inQuote = !inQuote; }
-            else if (ch === ',' && !inQuote) { cols.push(field.trim()); field = ''; }
-            else { field += ch; }
-        }
-        cols.push(field.trim());
-        return cols.map(c => c.replace(/^"|"$/g, '').trim());
-    }
+// ─── Receive on-order item ────────────────────────────────────────────────────
+async function handleReceive(pn, btn) {
+    if (!state.user.trim()) { showToast('Please enter your name first'); return; }
+    const loc = activeLocation();
+    if (!loc) { showToast('Select a location first'); return; }
 
-    const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
-    if (lines.length < 2) return {};
-
-    const headers = splitLine(lines[0]);
-    const result  = {};
-
-    // ── Format 3: Batch reorder CSV ──
-    // Detected by CC# in col 0, or part_number in col 10 of header
-    const isBatch = /^CC#?$/i.test(headers[0]) ||
-                    (headers.length >= 11 && /part.?num/i.test(headers[10]));
-    if (isBatch) {
-        // Part rows: cols 0-9 empty, col 10 = part_number, col 11 = qty
-        lines.slice(1).forEach(line => {
-            const cols = splitLine(line);
-            const pn  = cols[10] || '';
-            const qty = parseInt(cols[11] || '', 10);
-            if (pn && !isNaN(qty) && qty > 0) result[pn] = (result[pn] || 0) + qty;
+    btn.disabled = true;
+    try {
+        const res = await fetch(`/api/orders/${encodeURIComponent(pn)}/receive`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ location: loc, user: state.user.trim() })
         });
-        return result;
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Receive failed', 3000); return; }
+
+        const item = state.inventory.find(i => i.part_number === pn);
+        if (item) { item.quantity = data.quantity; item.on_order = 0; }
+        showToast(`Received ${data.received} \xd7 ${pn} \u2192 qty now ${data.quantity}`);
+        renderInventory(inputSearch.value);
+    } catch {
+        showToast('Server error during receive', 3000);
+    } finally {
+        btn.disabled = false;
     }
-
-    // ── Formats 1 & 2: column-header detection ──
-    // Format 1: part_number, quantity
-    // Format 2: part_number, description, quantity  (description ignored)
-    const pnIdx  = headers.findIndex(h => /part.?num|^pn$|^part[\s#]|^part$/i.test(h));
-    const qtyIdx = headers.findIndex(h => /qty|quantity|on.?order/i.test(h));
-    if (pnIdx === -1 || qtyIdx === -1) return null;
-
-    lines.slice(1).forEach(line => {
-        const cols = splitLine(line);
-        const pn  = cols[pnIdx]  || '';
-        const qty = parseInt(cols[qtyIdx] || '', 10);
-        if (pn && !isNaN(qty) && qty > 0) result[pn] = (result[pn] || 0) + qty;
-    });
-    return result;
 }
 
-btnUploadPo.addEventListener('click', () => {
-    if (!state.location) { showToast('Select a location first'); return; }
-    inputPoFile.value = '';
-    poFileName.textContent = 'Tap to select CSV file…';
-    btnPoUploadConfirm.disabled = true;
-    poUploadResult.classList.add('hidden');
-    poUploadError.classList.add('hidden');
-    modalUploadPo.classList.remove('hidden');
-});
-
-inputPoFile.addEventListener('change', () => {
-    const file = inputPoFile.files[0];
-    if (file) {
-        poFileName.textContent = file.name;
-        btnPoUploadConfirm.disabled = false;
-    } else {
-        poFileName.textContent = 'Tap to select CSV file…';
-        btnPoUploadConfirm.disabled = true;
-    }
-    poUploadResult.classList.add('hidden');
-    poUploadError.classList.add('hidden');
-});
-
-btnPoUploadConfirm.addEventListener('click', () => {
-    const file = inputPoFile.files[0];
+// ─── Upload Orders CSV ────────────────────────────────────────────────────────
+inputOrdersCsv.addEventListener('change', () => {
+    const file = inputOrdersCsv.files[0];
     if (!file) return;
+    inputOrdersCsv.value = '';
+
     const reader = new FileReader();
-    reader.onload = async ev => {
-        const parsed = parsePOCsv(ev.target.result);
-        if (parsed === null) {
-            poUploadError.textContent = 'Could not detect part number or quantity columns.';
-            poUploadError.classList.remove('hidden');
-            return;
+    reader.onload = async (e) => {
+        const csv = e.target.result;
+        try {
+            const res = await fetch('/api/orders/upload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ csv })
+            });
+            const data = await res.json();
+            if (!res.ok) { showToast(data.error || 'Upload failed', 3000); return; }
+            showToast(`PO uploaded: ${data.merged} line${data.merged === 1 ? '' : 's'} added`);
+            if (activeLocation()) await loadInventory();
+        } catch {
+            showToast('Upload failed \u2014 server error', 3000);
         }
-        let count = 0;
-        Object.entries(parsed).forEach(([pn, qty]) => {
-            state.poOrders[pn] = (state.poOrders[pn] || 0) + qty;
-            count++;
-        });
-        await savePOOrders(state.location, state.poOrders);
-        poUploadError.classList.add('hidden');
-        poUploadResult.textContent = `Loaded ${count} part${count === 1 ? '' : 's'} into on-order list.`;
-        poUploadResult.classList.remove('hidden');
-        btnPoUploadConfirm.disabled = true;
-        inputPoFile.value = '';
-        poFileName.textContent = 'Tap to select CSV file…';
-        renderInventory(inputSearch.value);
     };
     reader.readAsText(file);
 });
 
-btnPoUploadCancel.addEventListener('click', () => {
-    modalUploadPo.classList.add('hidden');
+// ─── Truck Stock ──────────────────────────────────────────────────────────────
+btnTruckStock.addEventListener('click', async () => {
+    if (!state.user.trim()) { showToast('Please enter your name first'); return; }
+
+    if (state.isTruckMode) {
+        // Exit truck view → return to location inventory
+        state.isTruckMode = false;
+        state.truckLocation = '';
+        state.locInventory = [];
+        state.truckInventory = [];
+        btnTruckStock.classList.remove('active');
+        if (state.location) loadInventory();
+        else { showView(viewSplash); splashText.textContent = 'Select a location to view inventory.'; }
+        return;
+    }
+
+    if (!state.location) { showToast('Select a location first'); return; }
+    if (state.location === state.truckLocation) { showToast('Select a location (not your truck) to use transfer mode'); return; }
+
+    btnTruckStock.disabled = true;
+    try {
+        const res = await fetch(`/api/truck/${encodeURIComponent(state.user.trim())}`);
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Failed to load truck stock'); return; }
+
+        state.truckLocation = data.location;
+        state.isTruckMode = true;
+        btnTruckStock.classList.add('active');
+        const locDisplay = state.location.replace(/_/g, ' ');
+        $('truck-col-loc-name').textContent = locDisplay;
+        $('truck-col-loc-header').textContent = locDisplay;
+        await loadTruckView();
+        if (data.created) showToast('Truck stock created for ' + state.user.trim());
+    } catch {
+        showToast('Server error loading truck stock');
+    } finally {
+        btnTruckStock.disabled = false;
+    }
 });
 
-modalUploadPo.addEventListener('click', e => {
-    if (e.target === modalUploadPo) modalUploadPo.classList.add('hidden');
-});
+// ─── Truck Transfer View ──────────────────────────────────────────────────────
+async function loadTruckView() {
+    const listEl = $('truck-parts-list');
+    listEl.innerHTML = '<div class="splash-message"><div class="splash-icon">&#8635;</div><p>Loading...</p></div>';
+    showView(viewTruck);
+    try {
+        const [locRes, truckRes] = await Promise.all([
+            fetch(`/api/inventory/${encodeURIComponent(state.location)}`),
+            fetch(`/api/inventory/${encodeURIComponent(state.truckLocation)}`)
+        ]);
+        const [locData, truckData] = await Promise.all([locRes.json(), truckRes.json()]);
+        if (!locRes.ok)   { showToast(locData.error   || 'Failed to load location inventory'); return; }
+        if (!truckRes.ok) { showToast(truckData.error || 'Failed to load truck inventory');    return; }
+        state.locInventory   = locData.inventory;
+        state.truckInventory = truckData.inventory;
+        renderTruckView($('truck-input-search').value);
+    } catch {
+        showToast('Failed to load truck view');
+    }
+}
 
-// ─── Transfer (truck ↔ shed split view) ──────────────────────────────────────
-async function sendTransfer(fromLoc, toLoc, part_number, quantity) {
-    const res = await fetch('/api/transfer', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from_location: fromLoc, to_location: toLoc, part_number, quantity, user: state.user.trim() })
+function renderTruckView(filter = '') {
+    const listEl      = $('truck-parts-list');
+    const noResultsEl = $('truck-no-results');
+    const term = filter.toLowerCase().trim();
+
+    // Merge all part numbers from both sides
+    const allPns = new Set([
+        ...state.locInventory.map(i => i.part_number),
+        ...state.truckInventory.map(i => i.part_number)
+    ]);
+
+    let items = [...allPns].map(pn => {
+        const li = state.locInventory.find(i => i.part_number === pn)   || { part_number: pn, quantity: 0 };
+        const ti = state.truckInventory.find(i => i.part_number === pn) || { part_number: pn, quantity: 0 };
+        return { ...li, locQty: Number(li.quantity) || 0, truckQty: Number(ti.quantity) || 0 };
     });
-    return res.json().then(data => ({ ok: res.ok, data }));
+
+    if (term) {
+        items = items.filter(item =>
+            item.part_number.toLowerCase().includes(term) ||
+            getDescription(item).toLowerCase().includes(term) ||
+            getEquipment(item).toLowerCase().includes(term)
+        );
+    }
+
+    listEl.innerHTML = '';
+    if (items.length === 0) { noResultsEl.classList.remove('hidden'); return; }
+    noResultsEl.classList.add('hidden');
+
+    const frag = document.createDocumentFragment();
+    items.forEach(item => {
+        const desc     = getDescription(item);
+        const equip    = getEquipment(item);
+        const descLine = desc + (equip ? ` \u2022 ${equip}` : '');
+        const { locQty, truckQty } = item;
+        const locClass   = locQty   === 0 ? 'zero' : locQty   <= 5 ? 'low' : '';
+        const truckClass = truckQty === 0 ? 'zero' : truckQty <= 5 ? 'low' : '';
+        const noUser = !state.user;
+        const card = document.createElement('div');
+        card.className = 'truck-card';
+        card.dataset.pn = item.part_number;
+        card.innerHTML = `
+            <div class="truck-card-info">
+                <span class="part-pn">${escapeHtml(item.part_number)}</span>
+                <span class="part-desc">${escapeHtml(descLine)}</span>
+            </div>
+            <div class="truck-qty-cell loc-side">
+                <span class="truck-cell-label">${escapeHtml(state.location.replace(/_/g, ' '))}</span>
+                <span class="truck-qty-val loc-val ${locClass}">${locQty}</span>
+            </div>
+            <div class="truck-arrows">
+                <button class="btn-to-truck" data-pn="${escapeAttr(item.part_number)}" ${noUser || locQty === 0 ? 'disabled' : ''} title="Move 1 to Truck">&#x2192;</button>
+                <button class="btn-to-loc"   data-pn="${escapeAttr(item.part_number)}" ${noUser || truckQty === 0 ? 'disabled' : ''} title="Move 1 to Location">&#x2190;</button>
+            </div>
+            <div class="truck-qty-cell truck-side">
+                <span class="truck-cell-label">Truck</span>
+                <input class="truck-qty-input ${truckClass}" type="number" value="${truckQty}" min="0" data-pn="${escapeAttr(item.part_number)}" ${noUser ? 'disabled' : ''} aria-label="Truck quantity for ${escapeAttr(item.part_number)}">
+            </div>`;
+        frag.appendChild(card);
+    });
+    listEl.appendChild(frag);
 }
 
-
-
-// Update the truck qty shown in the truck-row of a warehouse card
-function updateTruckRowQty(pn, newQty) {
-    const span = partsList.querySelector(`.truck-row-qty[data-pn="${escapeAttr(pn)}"]`);
-    if (!span) return;
-    span.textContent = newQty;
-    span.className = `truck-row-qty ${newQty === 0 ? 'zero' : newQty <= 5 ? 'low' : ''}`;
+function updateTruckCard(pn) {
+    const listEl = $('truck-parts-list');
+    const card = listEl.querySelector(`.truck-card[data-pn="${escapeAttr(pn)}"]`);
+    if (!card) return;
+    const li = state.locInventory.find(i => i.part_number === pn);
+    const ti = state.truckInventory.find(i => i.part_number === pn);
+    const newLocQty   = Number(li?.quantity) || 0;
+    const newTruckQty = Number(ti?.quantity) || 0;
+    const locVal   = card.querySelector('.loc-val');
+    const truckInput = card.querySelector('.truck-qty-input');
+    if (locVal) {
+        locVal.textContent = newLocQty;
+        locVal.className = `truck-qty-val loc-val ${newLocQty === 0 ? 'zero' : newLocQty <= 5 ? 'low' : ''}`.trim();
+    }
+    if (truckInput) {
+        truckInput.value = newTruckQty;
+        truckInput.className = `truck-qty-input ${newTruckQty === 0 ? 'zero' : newTruckQty <= 5 ? 'low' : ''}`.trim();
+    }
+    const toTruckBtnEl = card.querySelector('.btn-to-truck');
+    const toLocBtnEl   = card.querySelector('.btn-to-loc');
+    if (toTruckBtnEl) toTruckBtnEl.disabled = !state.user || newLocQty   === 0;
+    if (toLocBtnEl)   toLocBtnEl.disabled   = !state.user || newTruckQty === 0;
 }
+
+$('truck-input-search').addEventListener('input', function () {
+    renderTruckView(this.value);
+});
+
+$('truck-parts-list').addEventListener('change', async e => {
+    const input = e.target.closest('.truck-qty-input');
+    if (!input) return;
+    if (!state.user.trim()) { showToast('Please enter your name first'); return; }
+
+    const pn = input.dataset.pn;
+    const ti = state.truckInventory.find(i => i.part_number === pn);
+    if (!ti) return;
+
+    const newQty = parseInt(input.value, 10);
+    const oldQty = Number(ti.quantity) || 0;
+    if (isNaN(newQty) || newQty < 0) { input.value = oldQty; return; }
+    if (newQty === oldQty) return;
+
+    const diff   = Math.abs(newQty - oldQty);
+    const action = newQty > oldQty ? 'add' : 'subtract';
+
+    input.disabled = true;
+    try {
+        const res = await fetch(`/api/inventory/${encodeURIComponent(state.truckLocation)}/adjust`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ part_number: pn, action, quantity: diff, user: state.user.trim() })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            showToast(data.error || 'Error adjusting quantity', 3000);
+            input.value = oldQty;
+            return;
+        }
+        ti.quantity = data.quantity;
+        updateTruckCard(pn);
+        showToast(`Truck: ${pn} \u2192 ${data.quantity}`);
+    } catch {
+        showToast('Server error. Please try again.', 3000);
+        input.value = oldQty;
+    } finally {
+        input.disabled = false;
+    }
+});
+
+$('truck-parts-list').addEventListener('click', async e => {
+    const toTruckBtn = e.target.closest('.btn-to-truck');
+    const toLocBtn   = e.target.closest('.btn-to-loc');
+    if (!toTruckBtn && !toLocBtn) return;
+    if (!state.user.trim()) { showToast('Please enter your name first'); return; }
+
+    const btn     = toTruckBtn || toLocBtn;
+    const pn      = btn.dataset.pn;
+    const fromLoc = toTruckBtn ? state.location      : state.truckLocation;
+    const toLoc   = toTruckBtn ? state.truckLocation : state.location;
+
+    btn.disabled = true;
+    try {
+        const res = await fetch('/api/transfer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from_location: fromLoc, to_location: toLoc, part_number: pn, quantity: 1, user: state.user.trim() })
+        });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Transfer failed', 3000); btn.disabled = false; return; }
+
+        // Update in-memory state
+        const li = state.locInventory.find(i => i.part_number === pn);
+        const ti = state.truckInventory.find(i => i.part_number === pn);
+        if (toTruckBtn) {
+            if (li) li.quantity = data.from.quantity;
+            if (ti) ti.quantity = data.to.quantity;
+            else state.truckInventory.push({ part_number: pn, quantity: data.to.quantity });
+        } else {
+            if (ti) ti.quantity = data.from.quantity;
+            if (li) li.quantity = data.to.quantity;
+            else state.locInventory.push({ part_number: pn, quantity: data.to.quantity });
+        }
+        updateTruckCard(pn);
+        const dest = toTruckBtn ? 'Truck' : state.location.replace(/_/g, ' ');
+        showToast(`1 \xd7 ${pn} \u2192 ${dest}`);
+    } catch {
+        showToast('Server error', 3000);
+        btn.disabled = false;
+    }
+});
+
+$('btn-truck-done').addEventListener('click', () => {
+    state.isTruckMode    = false;
+    state.truckLocation  = '';
+    state.locInventory   = [];
+    state.truckInventory = [];
+    btnTruckStock.classList.remove('active');
+    if (state.location) loadInventory();
+    else { showView(viewSplash); splashText.textContent = 'Select a location to view inventory.'; }
+});
+
+// ─── Transfer Modal ───────────────────────────────────────────────────────────
+
+function openTransferModal(pn) {
+    _transferPn = pn;
+    const item = state.inventory.find(i => i.part_number === pn);
+    const desc = item ? getDescription(item) : '';
+    transferPnDisplay.textContent = pn + (desc ? ' \u2014 ' + desc : '');
+
+    selectTransferLoc.innerHTML = '<option value="">\u2014 Select Location \u2014</option>';
+    fetch('/api/locations').then(r => r.json()).then(locs => {
+        locs.sort().forEach(loc => {
+            const opt = document.createElement('option');
+            opt.value = loc;
+            opt.textContent = loc.replace(/_/g, ' ');
+            selectTransferLoc.appendChild(opt);
+        });
+    }).catch(() => showToast('Could not load locations'));
+
+    inputTransferQty.value = '1';
+    transferError.classList.add('hidden');
+    document.getElementById('transfer-dir-out').checked = true;
+    modalTransfer.classList.remove('hidden');
+}
+
+btnTransferCancel.addEventListener('click', () => { modalTransfer.classList.add('hidden'); });
+modalTransfer.addEventListener('click', e => { if (e.target === modalTransfer) modalTransfer.classList.add('hidden'); });
+
+btnTransferConfirm.addEventListener('click', async () => {
+    const toLoc = selectTransferLoc.value;
+    if (!toLoc) { transferError.textContent = 'Please select a location.'; transferError.classList.remove('hidden'); return; }
+    const qty = parseInt(inputTransferQty.value, 10);
+    if (isNaN(qty) || qty <= 0) { transferError.textContent = 'Quantity must be a positive number.'; transferError.classList.remove('hidden'); return; }
+
+    const dir     = document.querySelector('input[name="transfer-dir"]:checked').value;
+    const fromLoc = dir === 'truck-to-loc' ? state.truckLocation : toLoc;
+    const destLoc = dir === 'truck-to-loc' ? toLoc : state.truckLocation;
+
+    btnTransferConfirm.disabled = true;
+    transferError.classList.add('hidden');
+    try {
+        const res = await fetch('/api/transfer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from_location: fromLoc, to_location: destLoc, part_number: _transferPn, quantity: qty, user: state.user.trim() })
+        });
+        const data = await res.json();
+        if (!res.ok) { transferError.textContent = data.error; transferError.classList.remove('hidden'); return; }
+
+        modalTransfer.classList.add('hidden');
+        showToast(`Transferred ${qty} \xd7 ${_transferPn}`);
+        await loadInventory();
+    } catch {
+        transferError.textContent = 'Server error. Please try again.';
+        transferError.classList.remove('hidden');
+    } finally {
+        btnTransferConfirm.disabled = false;
+    }
+});
 
 // ─── Keyboard Shortcuts ───────────────────────────────────────────────────────
 document.addEventListener('keydown', async e => {
     if (e.ctrlKey && e.key === 'b') {
         e.preventDefault();
         if (!state.user.trim()) return;
-        inputNewLocation.value = '';
-        newLocError.classList.add('hidden');
-        modalNewLocation.classList.remove('hidden');
-        setTimeout(() => inputNewLocation.focus(), 100);
+        if (btnTruckStock.style.display !== 'none') {
+            // Hide the truck button (and exit truck mode if active)
+            if (state.isTruckMode) {
+                state.isTruckMode = false;
+                state.truckLocation = '';
+                state.locInventory = [];
+                state.truckInventory = [];
+                btnTruckStock.classList.remove('active');
+                if (state.location) loadInventory();
+                else { showView(viewSplash); splashText.textContent = 'Select a location to view inventory.'; }
+            }
+            btnTruckStock.style.display = 'none';
+        } else {
+            btnTruckStock.style.display = 'inline-flex';
+            showToast('Truck mode unlocked');
+        }
     }
     if (e.ctrlKey && e.key === 'd') {
         e.preventDefault();
@@ -1148,24 +1175,74 @@ document.addEventListener('keydown', async e => {
         showView(viewSplash);
         splashText.textContent = 'Select a location to view inventory.';
     }
-    if (e.ctrlKey && (e.key === 'm' || e.key === 'M')) {
-        e.preventDefault();
-        state.truckVisible = !state.truckVisible;
-        applyTruckVisibility();
-        showToast(state.truckVisible ? 'Truck features on' : 'Truck features hidden');
-    }
 });
 
-// ─── Truck Button ────────────────────────────────────────────────────────
-btnTruck.addEventListener('click', async () => {
-    if (!state.user.trim() || !state.truckLocation) return;
-    selectLocation.value = state.truckLocation;
-    state.location = state.truckLocation;
-    exitSplitView();
-    await loadInventory();
+// ─── Rename password gate ────────────────────────────────────────────────────
+btnRenamePasswordCancel.addEventListener('click', () => {
+    modalRenamePassword.classList.add('hidden');
+});
+
+btnRenamePasswordConfirm.addEventListener('click', () => {
+    if (inputRenamePassword.value.trim().toLowerCase() !== 'gauthier') {
+        renamePasswordError.classList.remove('hidden');
+        inputRenamePassword.value = '';
+        inputRenamePassword.focus();
+        return;
+    }
+    modalRenamePassword.classList.add('hidden');
+    inputRenamePassword.value = '';
+    renamePasswordError.classList.add('hidden');
+    // Show Rename vs New Location choice
+    btnAdminRename.classList.toggle('hidden', !state.location || state.isTruckMode);
+    modalAdminChoice.classList.remove('hidden');
+});
+
+inputRenamePassword.addEventListener('keydown', e => { if (e.key === 'Enter') btnRenamePasswordConfirm.click(); });
+
+// ─── Admin choice modal ────────────────────────────────────────────────────
+btnAdminCancel.addEventListener('click', () => {
+    modalAdminChoice.classList.add('hidden');
+});
+
+btnAdminRename.addEventListener('click', () => {
+    modalAdminChoice.classList.add('hidden');
+    renameLocCurrent.textContent = state.location.replace(/_/g, ' ');
+    inputRenameLocation.value = state.location.replace(/_/g, ' ');
+    renameLocError.classList.add('hidden');
+    modalRenameLocation.classList.remove('hidden');
+    setTimeout(() => { inputRenameLocation.select(); inputRenameLocation.focus(); }, 100);
+});
+
+btnAdminNewLocation.addEventListener('click', () => {
+    modalAdminChoice.classList.add('hidden');
+    inputNewLocation.value = '';
+    newLocError.classList.add('hidden');
+    modalNewLocation.classList.remove('hidden');
+    setTimeout(() => inputNewLocation.focus(), 100);
+});
+
+// ─── Rename via parts-list header click (only in PO Entry mode) ──────────────
+document.getElementById('parts-list-header').addEventListener('click', () => {
+    if (!state.location || state.isTruckMode || state.hideOrder) return;
+    renamePasswordError.classList.add('hidden');
+    inputRenamePassword.value = '';
+    modalRenamePassword.classList.remove('hidden');
+    setTimeout(() => inputRenamePassword.focus(), 100);
 });
 
 // ─── Transaction Log ──────────────────────────────────────────────────────────
+// ─── PO Entry Mode ───────────────────────────────────────────────────────────
+$('app-title').addEventListener('click', () => {
+    state.hideOrder = false;
+    applyOrderVisibility();
+    showToast('PO Entry mode on');
+});
+
+btnExitPo.addEventListener('click', () => {
+    state.hideOrder = true;
+    applyOrderVisibility();
+    showToast('PO Entry mode off');
+});
 btnTransactions.addEventListener('click', () => {
     state.txnPage = 1;
     state.txnUserFilter = '';
@@ -1203,7 +1280,7 @@ async function loadTransactions() {
         pageSize: state.txnPageSize,
         ...(state.txnUserFilter && { user: state.txnUserFilter }),
         ...(state.txnPartFilter && { part_number: state.txnPartFilter }),
-        ...(state.location && { location: state.location })
+        ...(activeLocation() && { location: activeLocation() })
     });
     try {
         const res = await fetch(`/api/transactions?${params}`);
@@ -1227,9 +1304,12 @@ function renderTransactions(rows) {
         const d = document.createElement('div');
         d.className = 'txn-row';
         const ts = row.timestamp ? new Date(row.timestamp).toLocaleString() : '';
+        const badgePrefix = row.action === 'add' ? '+' : row.action === 'subtract' ? '-' :
+            row.action === 'receive' ? '\u2713' : row.action === 'transfer-in' ? '\u2192' :
+            row.action === 'transfer-out' ? '\u2190' : '';
         d.innerHTML = `
             <span class="txn-main">${escapeHtml(row.part_number)} &mdash; ${escapeHtml(row.location.replace(/_/g, ' '))}</span>
-            <span class="txn-badge ${row.action}">${row.action === 'add' ? '+' : '-'}${escapeHtml(row.quantity)}</span>
+            <span class="txn-badge ${row.action}">${badgePrefix}${escapeHtml(row.quantity)}</span>
             <span class="txn-meta">${escapeHtml(ts)} &bull; ${escapeHtml(row.user)} &bull; Balance: ${escapeHtml(row.balance_after)}</span>`;
         frag.appendChild(d);
     });
@@ -1275,6 +1355,7 @@ function escapeAttr(str) {
     inputUser.value = saved;
     state.user = saved;
     applyUserState();
+    if (state.user.trim()) scheduleTruckDropdown();
 
     await loadLocations();
     updateHeaderHeight();

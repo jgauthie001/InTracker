@@ -11,10 +11,10 @@
     <!-- Header -->
     <header id="app-header">
         <div class="header-top">
-            <h1 id="app-title" title="Click to enter PO Entry Mode">InTracker</h1>
-            <div class="header-top-actions">
-                <button id="btn-theme" class="btn-icon" title="Toggle light/dark mode">&#9790;</button>
-                <button id="btn-exit-po" class="btn-icon btn-icon-danger hidden">&#10005; Exit PO Mode</button>
+            <h1 id="app-title" title="Tap to toggle PO Entry mode">InTracker</h1>
+            <div class="header-actions">
+                <button id="btn-exit-po" class="btn-exit-po hidden">Exit PO Entry</button>
+                <button id="btn-truck-stock" class="btn-icon" title="My Truck Stock" disabled>&#128666; Truck</button>
                 <button id="btn-transactions" class="btn-icon" title="Transaction Log" disabled>&#9776; Log</button>
             </div>
         </div>
@@ -30,7 +30,6 @@
         <select id="select-location" disabled>
             <option value="">— Select a Location —</option>
         </select>
-        <button id="btn-truck" class="btn-secondary hidden" disabled>🚛 Truck</button>
         <button id="btn-new-location" class="btn-secondary" disabled>+ New</button>
     </div>
 
@@ -47,12 +46,7 @@
 
         <!-- Inventory View -->
         <div id="view-inventory" class="view">
-
-            <div id="search-filter-wrap">
-            <div id="warehouse-panel-header" class="panel-section-header hidden">
-                <span class="panel-label" id="warehouse-panel-title">Warehouse</span>
-                <span class="panel-count" id="warehouse-panel-count"></span>
-            </div>
+            <div id="truck-mode-banner" class="hidden">&#128666; Truck Stock &mdash; <span id="truck-mode-name"></span></div>
             <div id="search-bar">
                 <input type="search" id="input-search" placeholder="&#128269; Search part number or description..." />
             </div>
@@ -69,17 +63,18 @@
                     <option value="desc-asc">Name A→Z</option>
                     <option value="desc-desc">Name Z→A</option>
                     <option value="equip-asc">Equipment A→Z</option>
-                </select>                <button id="btn-location-info" class="btn-reorder btn-reorder-info hidden" title="Edit location info for reorder CSV">&#128205; Loc Info</button>
-                <button id="btn-upload-po" class="btn-reorder btn-upload-po hidden" title="Upload PO CSV to track expected quantities">&#128203; Upload PO</button>
-                <button id="btn-reorder" class="btn-reorder hidden" title="Download CSV of parts below par level">&#8595; Reorder</button>
+                </select>                <button id="btn-reorder" class="btn-reorder" title="Download CSV of parts below par level">&#8595; Reorder</button>
+                <label id="lbl-upload-orders" class="btn-upload-orders" title="Upload a PO CSV to add on-order quantities">
+                    &#8679; Upload PO
+                    <input type="file" id="input-orders-csv" accept=".csv" style="display:none">
+                </label>
             </div>
             <div id="parts-list-header">
                 <span>Part # / Description</span>
                 <span>Par</span>
+                <span>On Order</span>
                 <span>Shed QTY on Hand</span>
-                <span class="po-header-col">On Order</span>
             </div>
-            </div><!-- /search-filter-wrap -->
             <div id="parts-list"></div>
             <div id="no-results" class="hidden">No parts match your search.</div>
         </div>
@@ -98,48 +93,79 @@
             <div id="txn-pagination" class="pagination"></div>
         </div>
 
+        <!-- Truck Transfer View -->
+        <div id="view-truck" class="view">
+            <div id="truck-view-header">
+                <span>&#128666; <span id="truck-col-loc-name"></span> &harr; Truck</span>
+                <button id="btn-truck-done" class="btn-secondary">&#8592; Back</button>
+            </div>
+            <div id="truck-search-bar">
+                <input type="search" id="truck-input-search" placeholder="&#128269; Search part number or description...">
+            </div>
+            <div id="truck-list-header">
+                <span>Part # / Description</span>
+                <span id="truck-col-loc-header">Location</span>
+                <span></span>
+                <span>Truck</span>
+            </div>
+            <div id="truck-parts-list"></div>
+            <div id="truck-no-results" class="hidden">No parts match your search.</div>
+        </div>
+
     </main>
 
-    <!-- Location Info Modal (PO Mode) -->
-    <div id="modal-location-info" class="modal hidden" role="dialog" aria-modal="true">
+    <!-- New Location Modal -->
+    <div id="modal-new-location" class="modal hidden" role="dialog" aria-modal="true">
         <div class="modal-box">
-            <div class="modal-title">&#128205; Location Info</div>
-            <p class="modal-hint">This information appears on generated reorder CSV files for the selected location.</p>
-            <div class="modal-field-group">
-                <label for="loc-info-cc">CC#</label>
-                <input type="text" id="loc-info-cc" class="modal-input" placeholder="Cost Center #" maxlength="30">
-            </div>
-            <div class="modal-field-group">
-                <label for="loc-info-shed">Deliver To</label>
-                <input type="text" id="loc-info-shed" class="modal-input" placeholder="Name to deliver to" maxlength="60">
-            </div>
-            <div class="modal-field-group">
-                <label for="loc-info-location-name">Location Name</label>
-                <input type="text" id="loc-info-location-name" class="modal-input" placeholder="Location / site name" maxlength="60">
-            </div>
-            <div class="modal-field-group">
-                <label for="loc-info-address">Address</label>
-                <input type="text" id="loc-info-address" class="modal-input" placeholder="Address line" maxlength="80">
-            </div>
-            <div class="modal-field-group">
-                <label for="loc-info-street">Street</label>
-                <input type="text" id="loc-info-street" class="modal-input" placeholder="Street" maxlength="80">
-            </div>
-            <div class="modal-field-group">
-                <label for="loc-info-city">City</label>
-                <input type="text" id="loc-info-city" class="modal-input" placeholder="City" maxlength="60">
-            </div>
-            <div class="modal-field-group">
-                <label for="loc-info-state">State</label>
-                <input type="text" id="loc-info-state" class="modal-input" placeholder="State" maxlength="30">
-            </div>
-            <div class="modal-field-group">
-                <label for="loc-info-zip">Zip</label>
-                <input type="text" id="loc-info-zip" class="modal-input" placeholder="ZIP Code" maxlength="15">
-            </div>
+            <div class="modal-title">New Location</div>
+            <p class="modal-hint">A new inventory list will be created and pre-filled from the master parts list at 0 qty.</p>
+            <input type="text" id="input-new-location" placeholder="Location name..." maxlength="60" />
+            <div id="new-loc-error" class="modal-error hidden"></div>
             <div class="modal-actions">
-                <button id="btn-loc-info-save" class="btn-primary">Save</button>
-                <button id="btn-loc-info-cancel" class="btn-ghost">Cancel</button>
+                <button id="btn-new-loc-confirm" class="btn-primary">Create</button>
+                <button id="btn-new-loc-cancel" class="btn-ghost">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rename Location Modal -->
+    <div id="modal-rename-location" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-box">
+            <div class="modal-title">Rename Location</div>
+            <p class="modal-hint">Enter a new name for <strong id="rename-loc-current"></strong>.</p>
+            <input type="text" id="input-rename-location" placeholder="New location name..." maxlength="60" />
+            <div id="rename-loc-error" class="modal-error hidden"></div>
+            <div class="modal-actions">
+                <button id="btn-rename-loc-confirm" class="btn-primary">Rename</button>
+                <button id="btn-rename-loc-cancel" class="btn-ghost">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Transfer Modal -->
+    <div id="modal-transfer" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-box">
+            <div class="modal-title">Transfer Part</div>
+            <p class="modal-hint"><span id="transfer-pn-display" style="font-weight:700;color:var(--accent)"></span></p>
+            <div class="transfer-direction">
+                <label class="transfer-dir-opt">
+                    <input type="radio" name="transfer-dir" id="transfer-dir-out" value="truck-to-loc" checked>
+                    Truck &rarr; Location
+                </label>
+                <label class="transfer-dir-opt">
+                    <input type="radio" name="transfer-dir" id="transfer-dir-in" value="loc-to-truck">
+                    Location &rarr; Truck
+                </label>
+            </div>
+            <select id="select-transfer-location">
+                <option value="">&#8212; Select Location &#8212;</option>
+            </select>
+            <label class="modal-field-label" for="input-transfer-qty">Quantity</label>
+            <input type="number" id="input-transfer-qty" min="1" value="1">
+            <div id="transfer-error" class="modal-error hidden"></div>
+            <div class="modal-actions">
+                <button id="btn-transfer-confirm" class="btn-primary">Transfer</button>
+                <button id="btn-transfer-cancel" class="btn-ghost">Cancel</button>
             </div>
         </div>
     </div>
@@ -168,34 +194,28 @@
         </div>
     </div>
 
-    <!-- Upload PO Modal -->
-    <div id="modal-upload-po" class="modal hidden" role="dialog" aria-modal="true">
+    <!-- Rename Password Modal -->
+    <div id="modal-rename-password" class="modal hidden" role="dialog" aria-modal="true">
         <div class="modal-box">
-            <div class="modal-title">&#128203; Upload PO CSV</div>
-            <p class="modal-hint">Accepts: <strong>part#&thinsp;+&thinsp;qty</strong>, <strong>part#&thinsp;+&thinsp;description&thinsp;+&thinsp;qty</strong>, or a <strong>Batch reorder CSV</strong> (single or multi-location). Quantities are added to existing on-order amounts.</p>
-            <label class="file-upload-label" for="input-po-file">
-                <span id="po-file-name">Tap to select CSV file&hellip;</span>
-                <input type="file" id="input-po-file" accept=".csv,text/csv">
-            </label>
-            <div id="po-upload-result" class="po-upload-result hidden"></div>
-            <div id="po-upload-error" class="modal-error hidden"></div>
+            <div class="modal-title">Enter Password</div>
+            <p class="modal-hint">&#128274; Who is an awesome all around guy?</p>
+            <input type="password" id="input-rename-password" placeholder="Password..." maxlength="60" />
+            <div id="rename-password-error" class="modal-error hidden">Incorrect password.</div>
             <div class="modal-actions">
-                <button id="btn-po-upload-confirm" class="btn-primary" disabled>Load PO</button>
-                <button id="btn-po-upload-cancel" class="btn-ghost">Cancel</button>
+                <button id="btn-rename-password-confirm" class="btn-primary">Continue</button>
+                <button id="btn-rename-password-cancel" class="btn-ghost">Cancel</button>
             </div>
         </div>
     </div>
 
-    <!-- New Location Modal -->
-    <div id="modal-new-location" class="modal hidden" role="dialog" aria-modal="true">
+    <!-- Admin Choice Modal -->
+    <div id="modal-admin-choice" class="modal hidden" role="dialog" aria-modal="true">
         <div class="modal-box">
-            <div class="modal-title">New Location</div>
-            <p class="modal-hint">A new inventory list will be created and pre-filled from the master parts list at 0 qty.</p>
-            <input type="text" id="input-new-location" placeholder="Location name..." maxlength="60" />
-            <div id="new-loc-error" class="modal-error hidden"></div>
-            <div class="modal-actions">
-                <button id="btn-new-loc-confirm" class="btn-primary">Create</button>
-                <button id="btn-new-loc-cancel" class="btn-ghost">Cancel</button>
+            <div class="modal-title">&#9881; Admin</div>
+            <div class="modal-actions" style="flex-direction:column;gap:10px;">
+                <button id="btn-admin-rename" class="btn-primary">&#9998; Rename Location</button>
+                <button id="btn-admin-new-location" class="btn-primary">&#43; New Location</button>
+                <button id="btn-admin-cancel" class="btn-ghost">Cancel</button>
             </div>
         </div>
     </div>
