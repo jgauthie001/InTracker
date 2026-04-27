@@ -81,7 +81,14 @@ const btnRenamePasswordCancel   = $('btn-rename-password-cancel');
 const modalAdminChoice      = $('modal-admin-choice');
 const btnAdminRename        = $('btn-admin-rename');
 const btnAdminNewLocation   = $('btn-admin-new-location');
+const btnAdminManageHidden  = $('btn-admin-manage-hidden');
 const btnAdminCancel        = $('btn-admin-cancel');
+
+// Manage hidden locations modal
+const modalManageHidden      = $('modal-manage-hidden');
+const hiddenLocList          = $('hidden-loc-list');
+const btnManageHiddenRestore = $('btn-manage-hidden-restore');
+const btnManageHiddenClose   = $('btn-manage-hidden-close');
 
 // Reorder format modal
 const modalReorderSelect    = $('modal-reorder-select');
@@ -178,13 +185,33 @@ inputUser.addEventListener('input', () => {
 });
 
 // ─── Locations ────────────────────────────────────────────────────────────────
+// ─── Per-user hidden locations (localStorage) ────────────────────────────────
+function getUserHiddenKey() {
+    return `intracker_hidden_${state.user.trim().toLowerCase()}`;
+}
+function getUserHidden() {
+    try { return JSON.parse(localStorage.getItem(getUserHiddenKey()) || '[]'); } catch { return []; }
+}
+function setUserHidden(arr) {
+    localStorage.setItem(getUserHiddenKey(), JSON.stringify(arr));
+}
+function hideLocationForUser(name) {
+    const hidden = getUserHidden();
+    if (!hidden.includes(name)) { hidden.push(name); setUserHidden(hidden); }
+}
+function unhideLocationForUser(name) {
+    setUserHidden(getUserHidden().filter(n => n !== name));
+}
+
 async function loadLocations() {
     try {
         const res = await fetch('/api/locations');
         const locations = await res.json();
         selectLocation.innerHTML = '<option value="">— Select a Location —</option>';
+        const userHidden = getUserHidden();
         locations.sort().forEach(loc => {
             if (loc.startsWith('truck_')) return; // truck locations only appear in truck mode
+            if (userHidden.includes(loc)) return;  // user-level hide
             const opt = document.createElement('option');
             opt.value = loc;
             opt.textContent = loc.replace(/_/g, ' ');
@@ -1166,16 +1193,22 @@ document.addEventListener('keydown', async e => {
     }
     if (e.ctrlKey && e.key === 'd') {
         e.preventDefault();
-        if (!state.location) return;
+        if (!state.location) {
+            // No location selected — open restore modal if there's anything hidden
+            const hidden = getUserHidden();
+            if (hidden.length === 0) { showToast('No hidden locations to restore'); return; }
+            renderHiddenLocList();
+            modalManageHidden.classList.remove('hidden');
+            return;
+        }
         const locToHide = state.location;
-        try {
-            await fetch(`/api/locations/${encodeURIComponent(locToHide)}/hide`, { method: 'POST' });
-        } catch { /* silent */ }
+        hideLocationForUser(locToHide);
         state.location = '';
         selectLocation.value = '';
         await loadLocations();
         showView(viewSplash);
         splashText.textContent = 'Select a location to view inventory.';
+        showToast(`"${locToHide.replace(/_/g, ' ')}" hidden — press Ctrl+D with no location selected to restore`);
     }
 });
 
@@ -1222,6 +1255,50 @@ btnAdminNewLocation.addEventListener('click', () => {
     modalNewLocation.classList.remove('hidden');
     setTimeout(() => inputNewLocation.focus(), 100);
 });
+
+btnAdminManageHidden.addEventListener('click', () => {
+    modalAdminChoice.classList.add('hidden');
+    renderHiddenLocList();
+    modalManageHidden.classList.remove('hidden');
+});
+
+btnManageHiddenRestore.addEventListener('click', async () => {
+    const checked = [...hiddenLocList.querySelectorAll('input[type="checkbox"]:checked')];
+    if (checked.length === 0) { showToast('No locations selected'); return; }
+    checked.forEach(cb => unhideLocationForUser(cb.value));
+    modalManageHidden.classList.add('hidden');
+    await loadLocations();
+    showToast(`${checked.length} location${checked.length > 1 ? 's' : ''} restored`);
+});
+
+btnManageHiddenClose.addEventListener('click', () => {
+    modalManageHidden.classList.add('hidden');
+});
+
+function renderHiddenLocList() {
+    const hidden = getUserHidden();
+    hiddenLocList.innerHTML = '';
+    if (hidden.length === 0) {
+        hiddenLocList.innerHTML = '<p style="opacity:0.6;font-size:0.9rem;margin:0">No hidden locations.</p>';
+        return;
+    }
+    hidden.forEach(name => {
+        const row = document.createElement('div');
+        row.className = 'hidden-loc-item';
+        const id = `chk-hidden-${name}`;
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.id = id;
+        cb.value = name;
+        cb.checked = true;
+        const label = document.createElement('label');
+        label.htmlFor = id;
+        label.textContent = name.replace(/_/g, ' ');
+        row.appendChild(cb);
+        row.appendChild(label);
+        hiddenLocList.appendChild(row);
+    });
+}
 
 // ─── Rename via parts-list header click (only in PO Entry mode) ──────────────
 document.getElementById('parts-list-header').addEventListener('click', () => {

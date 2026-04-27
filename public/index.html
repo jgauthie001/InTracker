@@ -215,7 +215,21 @@
             <div class="modal-actions" style="flex-direction:column;gap:10px;">
                 <button id="btn-admin-rename" class="btn-primary">&#9998; Rename Location</button>
                 <button id="btn-admin-new-location" class="btn-primary">&#43; New Location</button>
+                <button id="btn-admin-manage-hidden" class="btn-primary">&#128065; Manage Hidden Locations</button>
                 <button id="btn-admin-cancel" class="btn-ghost">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Manage Hidden Locations Modal -->
+    <div id="modal-manage-hidden" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-box">
+            <div class="modal-title">&#128065; Restore Locations</div>
+            <p style="font-size:0.85rem;opacity:0.65;margin:0 0 10px">Select the locations you want to show again.</p>
+            <div id="hidden-loc-list" class="hidden-loc-list"></div>
+            <div class="modal-actions" style="margin-top:14px">
+                <button id="btn-manage-hidden-restore" class="btn-primary">Restore Selected</button>
+                <button id="btn-manage-hidden-close" class="btn-ghost">Cancel</button>
             </div>
         </div>
     </div>

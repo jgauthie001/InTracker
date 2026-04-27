@@ -860,6 +860,32 @@ h1 {
     flex-shrink: 0;
 }
 
+/* ─── Manage Hidden Locations Modal ─────────────────────────────────────────── */
+.hidden-loc-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 260px;
+    overflow-y: auto;
+}
+.hidden-loc-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 4px;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.95rem;
+    cursor: pointer;
+}
+.hidden-loc-item input[type="checkbox"] {
+    accent-color: var(--accent);
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+.hidden-loc-item label { cursor: pointer; flex: 1; }
+
 #input-new-location {
     width: 100%;
     background: var(--surface2);
