@@ -30,6 +30,7 @@
         <select id="select-location" disabled>
             <option value="">— Select a Location —</option>
         </select>
+        <button id="btn-manage-locations" class="btn-icon" disabled title="Show or hide locations">&#128065; Locations</button>
         <button id="btn-new-location" class="btn-secondary" disabled>+ New</button>
     </div>
 
@@ -233,6 +234,19 @@
             <div class="modal-actions" style="margin-top:14px">
                 <button id="btn-manage-hidden-restore" class="btn-primary">Restore Selected</button>
                 <button id="btn-manage-hidden-close" class="btn-ghost">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Manage Locations Modal -->
+    <div id="modal-manage-locations" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-box">
+            <div class="modal-title">&#128065; Manage Locations</div>
+            <p style="font-size:0.85rem;opacity:0.65;margin:0 0 10px">Check locations you want to see. Uncheck to hide.</p>
+            <div id="manage-loc-list" class="hidden-loc-list"></div>
+            <div class="modal-actions" style="margin-top:14px">
+                <button id="btn-manage-loc-apply" class="btn-primary">Apply</button>
+                <button id="btn-manage-loc-cancel" class="btn-ghost">Cancel</button>
             </div>
         </div>
     </div>

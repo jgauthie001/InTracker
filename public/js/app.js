@@ -92,6 +92,13 @@ const hiddenLocList          = $('hidden-loc-list');
 const btnManageHiddenRestore = $('btn-manage-hidden-restore');
 const btnManageHiddenClose   = $('btn-manage-hidden-close');
 
+// Manage locations modal (all locations toggle)
+const btnManageLocations     = $('btn-manage-locations');
+const modalManageLocations   = $('modal-manage-locations');
+const manageLocList          = $('manage-loc-list');
+const btnManageLocApply      = $('btn-manage-loc-apply');
+const btnManageLocCancel     = $('btn-manage-loc-cancel');
+
 // Reorder format modal
 const modalReorderSelect    = $('modal-reorder-select');
 const reorderLocList        = $('reorder-loc-list');
@@ -150,6 +157,7 @@ function applyUserState() {
         locationBar.classList.remove('locked');
         selectLocation.disabled = false;
         btnNewLocation.disabled = false;
+        btnManageLocations.disabled = false;
         btnTransactions.disabled = false;
         btnTruckStock.disabled = false;
         if (!state.location) {
@@ -161,6 +169,7 @@ function applyUserState() {
         locationBar.classList.add('locked');
         selectLocation.disabled = true;
         btnNewLocation.disabled = true;
+        btnManageLocations.disabled = true;
         btnTransactions.disabled = true;
         btnTruckStock.disabled = true;
         if (state.isTruckMode) {
@@ -1233,7 +1242,7 @@ document.addEventListener('keydown', async e => {
         await loadLocations();
         showView(viewSplash);
         splashText.textContent = 'Select a location to view inventory.';
-        showToast(`"${locToHide.replace(/_/g, ' ')}" hidden — press Ctrl+D with no location selected to restore`);
+        showToast(`"${locToHide.replace(/_/g, ' ')}" hidden — use the Locations button to restore it`);
     }
 });
 
@@ -1298,6 +1307,64 @@ btnManageHiddenRestore.addEventListener('click', async () => {
 
 btnManageHiddenClose.addEventListener('click', () => {
     modalManageHidden.classList.add('hidden');
+});
+
+// ─── Manage Locations modal (all-locations toggle) ────────────────────────────
+btnManageLocations.addEventListener('click', openManageLocations);
+
+async function openManageLocations() {
+    try {
+        const res = await fetch('/api/locations');
+        const locations = await res.json();
+        const userHidden = getUserHidden();
+        manageLocList.innerHTML = '';
+        const nonTruck = locations.filter(l => !l.startsWith('truck_')).sort();
+        if (nonTruck.length === 0) {
+            manageLocList.innerHTML = '<p style="opacity:0.6;font-size:0.9rem;margin:0">No locations found.</p>';
+        } else {
+            nonTruck.forEach(name => {
+                const row = document.createElement('div');
+                row.className = 'hidden-loc-item';
+                const id = `chk-mgloc-${name}`;
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.id = id;
+                cb.value = name;
+                cb.checked = !userHidden.includes(name);
+                const label = document.createElement('label');
+                label.htmlFor = id;
+                label.textContent = name.replace(/_/g, ' ');
+                row.appendChild(cb);
+                row.appendChild(label);
+                manageLocList.appendChild(row);
+            });
+        }
+        modalManageLocations.classList.remove('hidden');
+    } catch {
+        showToast('Failed to load locations');
+    }
+}
+
+btnManageLocApply.addEventListener('click', async () => {
+    const items = [...manageLocList.querySelectorAll('input[type="checkbox"]')];
+    items.forEach(cb => {
+        if (cb.checked) unhideLocationForUser(cb.value);
+        else hideLocationForUser(cb.value);
+    });
+    // If the currently selected location was just hidden, deselect it
+    if (state.location && getUserHidden().includes(state.location)) {
+        state.location = '';
+        selectLocation.value = '';
+        showView(viewSplash);
+        splashText.textContent = 'Select a location to view inventory.';
+    }
+    modalManageLocations.classList.add('hidden');
+    await loadLocations();
+    showToast('Location visibility updated');
+});
+
+btnManageLocCancel.addEventListener('click', () => {
+    modalManageLocations.classList.add('hidden');
 });
 
 function renderHiddenLocList() {
