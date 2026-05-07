@@ -494,15 +494,22 @@ function renderInventory(filter = '') {
         const qtyClass = qty === 0 ? 'zero' : qty <= 5 ? 'low' : '';
         const orderClass = onOrder > 0 ? ' has-order' : '';
         const parDisplay = (!state.isTruckMode && parLevel > 0) ? parLevel : '&mdash;';
+        const poMode = !state.hideOrder && !state.isTruckMode;
+        const parContent = poMode
+            ? `<input class="par-edit-input" type="number" value="${parLevel}" min="0" data-pn="${escapeAttr(item.part_number)}" aria-label="Par level for ${escapeAttr(item.part_number)}">`
+            : `<span class="par-val">${parDisplay}</span>`;
+        const orderContent = poMode
+            ? `<input class="order-edit-input" type="number" value="${onOrder}" min="0" data-pn="${escapeAttr(item.part_number)}" aria-label="On order for ${escapeAttr(item.part_number)}">`
+            : (onOrder > 0 ? onOrder : '&mdash;');
         const card = document.createElement('div');
         card.className = `part-card${belowPar ? ' below-par' : ''}`;
         card.innerHTML = `
             <span class="part-pn">${escapeHtml(item.part_number)}</span>
             <span class="part-desc">${escapeHtml(descLine)}</span>
-            <span class="part-par"><span class="par-label">Par</span>${parDisplay}</span>
+            <span class="part-par"><span class="par-label">Par</span>${parContent}</span>
             <span class="part-order${orderClass}" data-pn="${escapeAttr(item.part_number)}">
                 <span class="order-label">On Ord</span>
-                ${onOrder > 0 ? onOrder : '&mdash;'}
+                ${orderContent}
                 ${onOrder > 0 ? `<button class="btn-receive" data-pn="${escapeAttr(item.part_number)}" ${disabled} title="Receive ${onOrder} unit(s) into current location">&#10003; Rcv</button>` : ''}
             </span>
             <div class="part-controls">
@@ -514,6 +521,66 @@ function renderInventory(filter = '') {
         frag.appendChild(card);
     });
     partsList.appendChild(frag);
+}
+
+// ─── Par Level Save ──────────────────────────────────────────────────────────
+async function handleParChange(input) {
+    const pn = input.dataset.pn;
+    const item = state.inventory.find(i => i.part_number === pn);
+    if (!item) return;
+    const currentPar = getParLevel(item);
+    const newPar = parseInt(input.value, 10);
+    if (isNaN(newPar) || newPar < 0) { input.value = currentPar; return; }
+    if (newPar === currentPar) return;
+    input.disabled = true;
+    try {
+        const res = await fetch(`/api/parts/${encodeURIComponent(pn)}/par_level`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ par_level: newPar })
+        });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Error saving par level', 3000); input.value = currentPar; input.disabled = false; return; }
+        const parKey = Object.keys(item).find(k => /par_level|parlevel/i.test(k));
+        if (parKey) item[parKey] = String(newPar);
+        else item.par_level = String(newPar); // orphan part: add key for re-render
+        showToast(`Par ${pn} \u2192 ${newPar}`);
+        renderInventory(inputSearch.value);
+    } catch {
+        showToast('Server error. Please try again.', 3000);
+        input.value = currentPar;
+    } finally {
+        input.disabled = false;
+    }
+}
+
+// ─── On-Order Save ────────────────────────────────────────────────────────────
+async function handleOrderChange(input) {
+    const pn = input.dataset.pn;
+    const item = state.inventory.find(i => i.part_number === pn);
+    if (!item) return;
+    const currentOnOrder = item.on_order || 0;
+    const newOnOrder = parseInt(input.value, 10);
+    if (isNaN(newOnOrder) || newOnOrder < 0) { input.value = currentOnOrder; return; }
+    if (newOnOrder === currentOnOrder) return;
+    input.disabled = true;
+    try {
+        const res = await fetch(`/api/orders/${encodeURIComponent(pn)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ quantity_on_order: newOnOrder })
+        });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Error saving on-order quantity', 3000); input.value = currentOnOrder; input.disabled = false; return; }
+        item.on_order = newOnOrder;
+        showToast(`On Ord ${pn} \u2192 ${newOnOrder}`);
+        renderInventory(inputSearch.value);
+    } catch {
+        showToast('Server error. Please try again.', 3000);
+        input.value = currentOnOrder;
+    } finally {
+        input.disabled = false;
+    }
 }
 
 inputSearch.addEventListener('input', () => renderInventory(inputSearch.value));
@@ -548,9 +615,13 @@ function updateCardDisplay(pn, newQty, newOnOrder) {
             const orderSpan = card.querySelector(`.part-order[data-pn="${escapeAttr(pn)}"]`);
             if (orderSpan) {
                 const disabled = !state.user ? 'disabled' : '';
+                const poMode = !state.hideOrder && !state.isTruckMode;
+                const orderDisplay = poMode
+                    ? `<input class="order-edit-input" type="number" value="${newOnOrder}" min="0" data-pn="${escapeAttr(pn)}" aria-label="On order for ${escapeAttr(pn)}">`
+                    : (newOnOrder > 0 ? newOnOrder : '&mdash;');
                 orderSpan.className = `part-order${newOnOrder > 0 ? ' has-order' : ''}`;
                 orderSpan.innerHTML = `<span class="order-label">On Ord</span>
-                    ${newOnOrder > 0 ? newOnOrder : '&mdash;'}
+                    ${orderDisplay}
                     ${newOnOrder > 0 ? `<button class="btn-receive" data-pn="${escapeAttr(pn)}" ${disabled} title="Receive ${newOnOrder} unit(s) into current location">&#10003; Rcv</button>` : ''}`;
             }
         }
@@ -602,6 +673,12 @@ partsList.addEventListener('click', async e => {
 
 // ─── Inline qty edit (tap the number, type directly) ─────────────────────────
 partsList.addEventListener('change', async e => {
+    const parInput = e.target.closest('.par-edit-input');
+    if (parInput) { await handleParChange(parInput); return; }
+
+    const orderInput = e.target.closest('.order-edit-input');
+    if (orderInput) { await handleOrderChange(orderInput); return; }
+
     const input = e.target.closest('.part-qty-input');
     if (!input) return;
     if (!state.user.trim()) { showToast('Please enter your name first'); return; }
@@ -1406,12 +1483,14 @@ document.getElementById('parts-list-header').addEventListener('click', () => {
 $('app-title').addEventListener('click', () => {
     state.hideOrder = false;
     applyOrderVisibility();
+    renderInventory(inputSearch.value);
     showToast('PO Entry mode on');
 });
 
 btnExitPo.addEventListener('click', () => {
     state.hideOrder = true;
     applyOrderVisibility();
+    renderInventory(inputSearch.value);
     showToast('PO Entry mode off');
 });
 btnTransactions.addEventListener('click', () => {

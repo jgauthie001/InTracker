@@ -1,17 +1,22 @@
-# InTracker — Architecture Documentation
+﻿# InTracker — Architecture Documentation
 
 ---
 
 ## Development Environment
 
-All code lives in `E:\intracker\`. Both the development and production servers run from this single directory, differentiated only by environment variables:
+All code lives in `E:\intracker\`. Both servers run from this single directory, differentiated by environment variables:
 
-| Environment | Port | Data directory | Start script |
-|-------------|------|----------------|--------------|
-| Development | 3031 | `data-dev/`    | `START-DEV.bat` |
-| Production  | 3030 | `data/`        | `START.bat` |
+| Environment | Port | Data dir    | Frontend dir  | Start script    |
+|-------------|------|-------------|---------------|-----------------|
+| Development | 3031 | `data-dev/` | `public-dev/` | `START-DEV.bat` |
+| Production  | 3030 | `data/`     | `public/`     | `START.bat`     |
 
-Edit files directly in `E:\intracker\`. Restart whichever server you're testing against to pick up changes to `server.js`. Frontend static files (HTML/CSS/JS) are served from disk with no restart required.
+**Critical rules:**
+- Dev frontend work → edit files in `public-dev/` **only**
+- `public/` = production frontend — never touch during dev work
+- `server.js` is shared; changes take effect on whichever server is restarted
+- To promote dev → prod: copy changed files from `public-dev/` to `public/`, then commit
+- `public-dev/` is gitignored and never committed; `public/` is what ships
 
 ---
 
@@ -53,10 +58,11 @@ E:\intracker\
 │   └── locations/
 │       ├── <Name>.csv      One file per physical location
 │       └── truck_<user>.csv  Personal truck inventory per user (auto-created)
-├── data-dev/               Development data (mirrors data/ structure)
+├── data-dev/               Development data (gitignored, separate from production)
 │   ├── parts.csv           Synced from data/ by START-DEV.bat on each launch
 │   └── locations/
-└── public/
+├── public/                 PRODUCTION frontend (committed; do not edit during dev)
+└── public-dev/             DEV frontend sandbox (gitignored; edit here, then promote)
     ├── index.html
     ├── css/
     │   └── style.css

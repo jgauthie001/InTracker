@@ -336,6 +336,39 @@ h1 {
     margin-bottom: 1px;
 }
 
+/* Par level input in PO Entry mode */
+.par-edit-input {
+    width: 44px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 0.82rem;
+    font-weight: 700;
+    text-align: center;
+    border-radius: 4px;
+    padding: 1px 3px;
+}
+.par-edit-input:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+
+.order-edit-input {
+    width: 50px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 0.82rem;
+    font-weight: 700;
+    text-align: center;
+    border-radius: 4px;
+    padding: 1px 3px;
+}
+.order-edit-input:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+
 .part-order {
     grid-column: 3;
     grid-row: 1 / span 2;

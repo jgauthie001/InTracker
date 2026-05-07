@@ -9,3 +9,5 @@ data-dev/transactions.csv
 data-dev/locations/
 data-dev/backups/
 data-dev/hidden_locations.json
+# Dev frontend sandbox — never committed, never affects prod
+public-dev/

@@ -14,6 +14,9 @@ const PORT = process.env.PORT || 3030;
 const DATA_DIR = process.env.DATA_DIR
     ? path.resolve(process.env.DATA_DIR)
     : path.join(__dirname, 'data');
+const STATIC_DIR = process.env.STATIC_DIR
+    ? path.resolve(process.env.STATIC_DIR)
+    : path.join(__dirname, 'public');
 const LOCATIONS_DIR = path.join(DATA_DIR, 'locations');
 const PARTS_FILE = path.join(DATA_DIR, 'parts.csv');
 const TRANSACTIONS_FILE = path.join(DATA_DIR, 'transactions.csv');
@@ -23,7 +26,7 @@ const ORDERS_FILE    = path.join(DATA_DIR, 'orders.csv');
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(STATIC_DIR));
 
 // ─── CSV Helpers ─────────────────────────────────────────────────────────────
 
@@ -127,6 +130,37 @@ app.get('/api/parts', async (req, res) => {
         res.json({ headers, rows });
     } catch (err) {
         if (err.code === 'ENOENT') return res.status(404).json({ error: 'parts.csv not found' });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// PUT /api/parts/:partNumber/par_level — update par level in parts.csv
+app.put('/api/parts/:partNumber/par_level', async (req, res) => {
+    try {
+        const pn  = req.params.partNumber;
+        const par = parseInt(req.body.par_level, 10);
+        if (isNaN(par) || par < 0) return res.status(400).json({ error: 'par_level must be >= 0' });
+
+        const text = await fsp.readFile(PARTS_FILE, 'utf8');
+        const { headers, rows } = parseCSV(text);
+        const pnCol = headers.find(h => /part.?num|part.?no|partno|pn\b/i.test(h)) || headers[0];
+        const parKey = headers.find(h => /par_level|parlevel/i.test(h));
+        if (!parKey) return res.status(400).json({ error: 'par_level column not found in parts.csv' });
+
+        const idx = rows.findIndex(r => r[pnCol] === pn);
+        if (idx === -1) {
+            // Part not in master list yet — add a minimal row
+            const newRow = {};
+            headers.forEach(h => { newRow[h] = ''; });
+            newRow[pnCol] = pn;
+            newRow[parKey] = par;
+            rows.push(newRow);
+        } else {
+            rows[idx][parKey] = par;
+        }
+        await fsp.writeFile(PARTS_FILE, rowsToCSV(headers, rows), 'utf8');
+        res.json({ part_number: pn, par_level: par });
+    } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
