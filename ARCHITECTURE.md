@@ -345,7 +345,7 @@ The truck location does **not** appear in the main location dropdown by default.
 
 ## Running the App
 
-Both servers run from `E:\intracker\`. Edit files there directly.
+Both servers run from `E:\intracker\`. Dev frontend changes go in `public-dev/`; production frontend changes go in `public/` (after validating in dev).
 
 ### Production (port 3030)
 ```bat
@@ -359,13 +359,14 @@ START-DEV.bat
 ```
 Server runs on port `3031` using `data-dev/`. Isolated from production — separate locations, transactions, and backups. `START-DEV.bat` automatically syncs `data/parts.csv` → `data-dev/parts.csv` on each launch so the part catalog stays current.
 
-Changes to `server.js` require restarting the server. Frontend files (`index.html`, `app.js`, `style.css`) are served directly from disk — no restart needed.
+Changes to `server.js` require restarting the server. Dev frontend files in `public-dev/` are served from disk — no restart needed. To push frontend changes to production, copy from `public-dev/` to `public/`.
 
 ### Environment Variables
 | Variable   | Default  | Description                        |
 |------------|----------|------------------------------------|
 | `PORT`     | `3030`   | HTTP port to listen on             |
-| `DATA_DIR` | `data/`  | Path to data directory (relative to server.js or absolute) |
+| `DATA_DIR`   | `data/`      | Path to data directory (relative to server.js or absolute)   |
+| `STATIC_DIR` | `public/`    | Path to static frontend directory (relative or absolute)     |
 
 The startup log identifies the active environment:
 ```
