@@ -3,8 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
     <title>InTracker</title>
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/style.css?v=20260509b">
 </head>
 <body>
 
@@ -67,11 +69,17 @@
                     <option value="desc-asc">Name A→Z</option>
                     <option value="desc-desc">Name Z→A</option>
                     <option value="equip-asc">Equipment A→Z</option>
-                </select>                <button id="btn-reorder" class="btn-reorder hidden" title="Download CSV of parts below par level">&#8595; Reorder</button>
+                </select>
                 <label id="lbl-upload-orders" class="btn-upload-orders" title="Upload a PO CSV to add on-order quantities">
                     &#8679; Upload PO
                     <input type="file" id="input-orders-csv" accept=".csv" style="display:none">
                 </label>
+            </div>
+            <div id="po-action-bar" class="po-action-bar hidden">
+                <button id="btn-reorder" class="btn-reorder" title="Download CSV of parts below par level">&#8595; Reorder CSV</button>
+                <button id="btn-loc-info" class="btn-loc-info" title="Edit location info for reorder CSV">&#9998; Loc Info</button>
+                <button id="btn-rec-parts" class="btn-rec-parts" title="Upload a CSV to add quantities directly to shed stock">&#8679; Rec Parts</button>
+                <input type="file" id="input-rec-parts-csv" accept=".csv" style="display:none">
             </div>
             <div id="parts-list-header">
                 <span>Part # / Description</span>
@@ -251,9 +259,39 @@
         </div>
     </div>
 
+    <!-- Location Info Modal -->
+    <div id="modal-loc-info" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-box">
+            <div class="modal-title">&#9998; Location Info &mdash; <span id="loc-info-loc-name"></span></div>
+            <p class="modal-hint">These fields populate the header row in the batch reorder CSV.</p>
+            <div class="loc-info-form">
+                <label class="modal-field-label" for="loc-info-cc">CC#</label>
+                <input type="text" id="loc-info-cc" maxlength="40" placeholder="Cost center #" />
+                <label class="modal-field-label" for="loc-info-shed">Deliver To</label>
+                <input type="text" id="loc-info-shed" maxlength="80" placeholder="Shed / building name" />
+                <label class="modal-field-label" for="loc-info-locname">Location Name</label>
+                <input type="text" id="loc-info-locname" maxlength="80" placeholder="Display name for CSV" />
+                <label class="modal-field-label" for="loc-info-address">Address</label>
+                <input type="text" id="loc-info-address" maxlength="100" placeholder="Full address" />
+                <label class="modal-field-label" for="loc-info-street">Street</label>
+                <input type="text" id="loc-info-street" maxlength="80" placeholder="" />
+                <label class="modal-field-label" for="loc-info-city">City</label>
+                <input type="text" id="loc-info-city" maxlength="60" placeholder="" />
+                <label class="modal-field-label" for="loc-info-state">State</label>
+                <input type="text" id="loc-info-state" maxlength="2" placeholder="CA" />
+                <label class="modal-field-label" for="loc-info-zip">Zip</label>
+                <input type="text" id="loc-info-zip" inputmode="numeric" maxlength="10" placeholder="" />
+            </div>
+            <div class="modal-actions">
+                <button id="btn-loc-info-save" class="btn-primary">Save</button>
+                <button id="btn-loc-info-cancel" class="btn-ghost">Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast notification -->
     <div id="toast" class="toast hidden"></div>
 
-    <script src="js/app.js"></script>
+    <script src="js/app.js?v=20260509b"></script>
 </body>
 </html>

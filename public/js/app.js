@@ -106,6 +106,25 @@ const reorderError          = $('reorder-error');
 const btnReorderGenerate    = $('btn-reorder-generate');
 const btnReorderCancel      = $('btn-reorder-cancel');
 
+// Rec Parts
+const btnRecParts        = $('btn-rec-parts');
+const inputRecPartsCsv   = $('input-rec-parts-csv');
+
+// Location info modal
+const btnLocInfo         = $('btn-loc-info');
+const modalLocInfo       = $('modal-loc-info');
+const locInfoLocName     = $('loc-info-loc-name');
+const locInfoCc          = $('loc-info-cc');
+const locInfoShed        = $('loc-info-shed');
+const locInfoLocname     = $('loc-info-locname');
+const locInfoAddress     = $('loc-info-address');
+const locInfoStreet      = $('loc-info-street');
+const locInfoCity        = $('loc-info-city');
+const locInfoState       = $('loc-info-state');
+const locInfoZip         = $('loc-info-zip');
+const btnLocInfoSave     = $('btn-loc-info-save');
+const btnLocInfoCancel   = $('btn-loc-info-cancel');
+
 // Transaction log
 const txnList          = $('txn-list');
 const txnPagination    = $('txn-pagination');
@@ -406,9 +425,10 @@ function applyOrderVisibility() {
     const hide = state.hideOrder || activeLocation().startsWith('truck_');
     viewInventory.classList.toggle('order-hidden', hide);
     btnExitPo.classList.toggle('hidden', state.hideOrder);
-    btnReorder.classList.toggle('hidden', state.hideOrder);
+    const poBar = document.getElementById('po-action-bar');
+    if (poBar) poBar.classList.toggle('hidden', state.hideOrder || state.isTruckMode);
     const hdr = document.getElementById('parts-list-header');
-    hdr.title = state.hideOrder ? '' : 'Click to rename this location';
+    if (hdr) hdr.title = state.hideOrder ? '' : 'Click to rename this location';
 }
 
 function populateEquipmentFilter() {
@@ -733,6 +753,14 @@ function getLocInfo(locName) {
     } catch { return {}; }
 }
 
+function setLocInfo(locName, info) {
+    try {
+        const all = JSON.parse(localStorage.getItem('intracker_loc_info') || '{}');
+        all[locName] = info;
+        localStorage.setItem('intracker_loc_info', JSON.stringify(all));
+    } catch { /* ignore */ }
+}
+
 btnReorder.addEventListener('click', () => {
     const locOptions = [...selectLocation.options].filter(o =>
         o.value && !o.value.startsWith('truck_') && !o.dataset.truck
@@ -975,6 +1003,40 @@ inputOrdersCsv.addEventListener('change', () => {
     };
     reader.readAsText(file);
 });
+
+// ─── Rec Parts CSV ────────────────────────────────────────────────────────────
+if (btnRecParts && inputRecPartsCsv) {
+    btnRecParts.addEventListener('click', () => inputRecPartsCsv.click());
+
+inputRecPartsCsv.addEventListener('change', () => {
+    const file = inputRecPartsCsv.files[0];
+    if (!file) return;
+    inputRecPartsCsv.value = '';
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+        const csv = e.target.result;
+        const loc = activeLocation();
+        if (!loc) { showToast('Select a location first'); return; }
+        try {
+            const res = await fetch(`/api/inventory/${encodeURIComponent(loc)}/bulk-receive`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ csv, user: state.user })
+            });
+            const data = await res.json();
+            if (!res.ok) { showToast(data.error || 'Receive failed', 3000); return; }
+            const msg = `Received: ${data.received} part${data.received === 1 ? '' : 's'} added` +
+                (data.skipped > 0 ? `, ${data.skipped} not found` : '');
+            showToast(msg, 4000);
+            await loadInventory();
+        } catch {
+            showToast('Receive failed — server error', 3000);
+        }
+    };
+    reader.readAsText(file);
+    });
+}
 
 // ─── Truck Stock ──────────────────────────────────────────────────────────────
 btnTruckStock.addEventListener('click', async () => {
@@ -1443,6 +1505,51 @@ btnManageLocApply.addEventListener('click', async () => {
 btnManageLocCancel.addEventListener('click', () => {
     modalManageLocations.classList.add('hidden');
 });
+
+// ─── Location Info Modal ──────────────────────────────────────────────────────
+if (btnLocInfo && modalLocInfo) {
+    btnLocInfo.addEventListener('click', () => {
+        const locName = state.location;
+        if (!locName) return;
+        const info = getLocInfo(locName);
+        locInfoLocName.textContent  = locName.replace(/_/g, ' ');
+        locInfoCc.value             = info.cc           || '';
+        locInfoShed.value           = info.shed         || '';
+        locInfoLocname.value        = info.locationName || locName.replace(/_/g, ' ');
+        locInfoAddress.value        = info.address      || '';
+        locInfoStreet.value         = info.street       || '';
+        locInfoCity.value           = info.city         || '';
+        locInfoState.value          = info.state        || '';
+        locInfoZip.value            = info.zip          || '';
+        modalLocInfo.classList.remove('hidden');
+        setTimeout(() => locInfoCc.focus(), 100);
+    });
+
+    btnLocInfoSave.addEventListener('click', () => {
+        const locName = state.location;
+        if (!locName) return;
+        setLocInfo(locName, {
+            cc:           locInfoCc.value.trim(),
+            shed:         locInfoShed.value.trim(),
+            locationName: locInfoLocname.value.trim(),
+            address:      locInfoAddress.value.trim(),
+            street:       locInfoStreet.value.trim(),
+            city:         locInfoCity.value.trim(),
+            state:        locInfoState.value.trim(),
+            zip:          locInfoZip.value.trim(),
+        });
+        modalLocInfo.classList.add('hidden');
+        showToast('Location info saved');
+    });
+
+    btnLocInfoCancel.addEventListener('click', () => {
+        modalLocInfo.classList.add('hidden');
+    });
+
+    modalLocInfo.addEventListener('click', e => {
+        if (e.target === modalLocInfo) modalLocInfo.classList.add('hidden');
+    });
+}
 
 function renderHiddenLocList() {
     const hidden = getUserHidden();

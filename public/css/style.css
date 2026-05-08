@@ -205,6 +205,13 @@ h1 {
     padding: 0 14px 8px;
 }
 
+.po-action-bar {
+    display: flex;
+    gap: 8px;
+    padding: 0 14px 8px;
+}
+.po-action-bar.hidden { display: none; }
+
 #filter-sort-bar select {
     flex: 1;
     background: var(--surface);
@@ -232,6 +239,34 @@ h1 {
     white-space: nowrap;
 }
 .btn-reorder:active { opacity: 0.8; }
+
+.btn-loc-info {
+    flex: 0 0 auto;
+    background: var(--surface2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 7px 12px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.btn-loc-info:active { opacity: 0.8; }
+
+.btn-rec-parts {
+    flex: 0 0 auto;
+    background: var(--add);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 7px 12px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.btn-rec-parts:active { opacity: 0.8; }
 
 .btn-upload-orders {
     flex: 0 0 auto;
@@ -867,6 +902,32 @@ h1 {
     background: rgba(39,174,96,0.15);
     color: var(--add);
     white-space: nowrap;
+}
+
+/* ─── Location Info Form ─────────────────────────────────────────────────────── */
+.loc-info-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    max-height: 55vh;
+    overflow-y: auto;
+}
+.loc-info-form .modal-field-label {
+    margin-top: 10px;
+    margin-bottom: 3px;
+}
+.loc-info-form input[type="text"] {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 0.95rem;
+    padding: 8px 10px;
+}
+.loc-info-form input[type="text"]:focus {
+    outline: none;
+    border-color: var(--accent);
 }
 
 .reorder-format-group {

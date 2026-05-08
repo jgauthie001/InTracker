@@ -26,6 +26,16 @@ const ORDERS_FILE    = path.join(DATA_DIR, 'orders.csv');
 
 app.use(cors());
 app.use(express.json());
+
+// Serve index.html with no-cache headers so browsers always get the latest version
+const serveIndex = (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.sendFile(path.join(STATIC_DIR, 'index.html'));
+};
+app.get('/', serveIndex);
+app.get('/index.html', serveIndex);
+
 app.use(express.static(STATIC_DIR));
 
 // ─── CSV Helpers ─────────────────────────────────────────────────────────────
@@ -542,6 +552,79 @@ app.post('/api/orders/upload', async (req, res) => {
         await fsp.writeFile(ORDERS_FILE, rowsToCSV(['part_number', 'quantity_on_order'], newRows), 'utf8');
         res.json({ merged: added, total: newRows.length });
     } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/inventory/:location/bulk-receive — body: { csv, user } — adds quantities directly to shed stock
+app.post('/api/inventory/:location/bulk-receive', async (req, res) => {
+    try {
+        const safe = req.params.location.replace(/[^a-zA-Z0-9_\-]/g, '');
+        const { csv, user } = req.body;
+        if (!csv || typeof csv !== 'string') return res.status(400).json({ error: 'CSV content required' });
+        if (!user || !user.trim()) return res.status(400).json({ error: 'User name required' });
+
+        const { headers: csvHeaders, rows: csvRows } = parseCSV(csv);
+        const pnCol  = csvHeaders.find(h => /part.?num|part.?no|partno|\bpn\b/i.test(h)) || csvHeaders[0];
+        const qtyCol = csvHeaders.find(h => /qty|quantity/i.test(h) && h !== pnCol) || csvHeaders[1];
+        if (!pnCol || !qtyCol) return res.status(400).json({ error: 'Could not detect part_number and quantity columns' });
+
+        // Build map of quantities to add
+        const addMap = {};
+        csvRows.forEach(row => {
+            const pn  = (row[pnCol] || '').trim();
+            const qty = parseInt(row[qtyCol], 10) || 0;
+            if (pn && qty > 0) addMap[pn] = (addMap[pn] || 0) + qty;
+        });
+        if (Object.keys(addMap).length === 0) return res.status(400).json({ error: 'No valid rows found in CSV' });
+
+        // Read and update location inventory
+        const locFile = path.join(LOCATIONS_DIR, `${safe}.csv`);
+        const invText = await fsp.readFile(locFile, 'utf8');
+        const { headers: invHeaders, rows: invRows } = parseCSV(invText);
+
+        const ts = new Date().toISOString();
+        const logLines = [];
+        let received = 0, skipped = 0;
+
+        Object.entries(addMap).forEach(([pn, qty]) => {
+            const rowIdx = invRows.findIndex(r => r.part_number === pn);
+            if (rowIdx === -1) { skipped++; return; }
+            const current = parseInt(invRows[rowIdx].quantity, 10) || 0;
+            invRows[rowIdx].quantity = current + qty;
+            logLines.push(`\n${ts},${escapeCSVField(user.trim())},${escapeCSVField(safe)},${escapeCSVField(pn)},add,${qty},${current + qty}`);
+            received++;
+        });
+
+        const allHeaders = invHeaders.length ? invHeaders : ['part_number', 'quantity'];
+        await fsp.writeFile(locFile, rowsToCSV(allHeaders, invRows), 'utf8');
+
+        if (logLines.length > 0) {
+            await ensureTransactionsFile();
+            await fsp.appendFile(TRANSACTIONS_FILE, logLines.join(''), 'utf8');
+        }
+
+        // Decrement on-order quantities for received parts
+        if (received > 0) {
+            try {
+                await ensureOrdersFile();
+                const ordersText = await fsp.readFile(ORDERS_FILE, 'utf8');
+                const { rows: orderRows } = parseCSV(ordersText);
+                const orderMap = {};
+                orderRows.forEach(r => { orderMap[r.part_number] = parseInt(r.quantity_on_order, 10) || 0; });
+                Object.entries(addMap).forEach(([pn, qty]) => {
+                    if (orderMap[pn] > 0) orderMap[pn] = Math.max(0, orderMap[pn] - qty);
+                });
+                const newOrderRows = Object.entries(orderMap)
+                    .filter(([, q]) => q > 0)
+                    .map(([p, q]) => ({ part_number: p, quantity_on_order: q }));
+                await fsp.writeFile(ORDERS_FILE, rowsToCSV(['part_number', 'quantity_on_order'], newOrderRows), 'utf8');
+            } catch { /* orders file not available */ }
+        }
+
+        res.json({ received, skipped });
+    } catch (err) {
+        if (err.code === 'ENOENT') return res.status(404).json({ error: 'Location not found' });
         res.status(500).json({ error: err.message });
     }
 });
