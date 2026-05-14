@@ -473,7 +473,7 @@ h1 {
 .part-qty-input::-webkit-outer-spin-button { -webkit-appearance: none; }
 
 .part-qty-input:focus { border-color: var(--accent); }
-.part-qty-input.low { color: var(--warn); }
+
 .part-qty-input.zero { color: var(--sub); }
 .part-qty-input:disabled { opacity: 0.5; }
 
@@ -640,7 +640,7 @@ h1 {
 .truck-qty-input::-webkit-inner-spin-button,
 .truck-qty-input::-webkit-outer-spin-button { -webkit-appearance: none; }
 .truck-qty-input:focus { border-color: var(--warn); }
-.truck-qty-input.low  { color: var(--warn); }
+
 .truck-qty-input.zero { color: var(--sub); }
 .truck-qty-input:disabled { opacity: 0.5; }
 
@@ -662,7 +662,7 @@ h1 {
     font-weight: 700;
     color: var(--text);
 }
-.truck-qty-val.low  { color: var(--warn); }
+
 .truck-qty-val.zero { color: var(--sub); }
 
 .truck-arrows {
@@ -1093,6 +1093,8 @@ h1 {
     padding: 6px 14px;
     letter-spacing: 0.04em;
 }
+
+
 
 .transfer-direction {
     display: flex;

@@ -21,15 +21,6 @@ REM Ensure data-dev directory exists
 if not exist "data-dev" mkdir "data-dev"
 if not exist "data-dev\locations" mkdir "data-dev\locations"
 
-REM Sync parts.csv from production (InTrackerDoNotTouch takes priority)
-if exist "E:\InTrackerDoNotTouch\data\parts.csv" (
-    xcopy /Y /Q "E:\InTrackerDoNotTouch\data\parts.csv" "data-dev\" >nul
-    echo Synced parts.csv from InTrackerDoNotTouch\data\
-) else if exist "data\parts.csv" (
-    xcopy /Y /Q "data\parts.csv" "data-dev\" >nul
-    echo Synced parts.csv from data\
-)
-
 echo.
 echo ============================================
 echo  InTracker [DEVELOPMENT]

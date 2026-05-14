@@ -1,0 +1,4 @@
+timestamp,user,location,part_number,action,quantity,balance_after
+2026-03-20T09:00:00.000Z,TestUser,Service_Van_2,53000600,add,1,1
+2026-03-20T09:01:00.000Z,TestUser,Service_Van_2,92581012,add,2,2
+2026-03-22T14:00:00.000Z,TestUser,Service_Van_2,93021013,add,1,1

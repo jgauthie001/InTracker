@@ -5,15 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
-    <title>InTracker</title>
-    <link rel="stylesheet" href="css/style.css?v=20260509b">
+    <title>InTrack</title>
+    <link rel="stylesheet" href="css/style.css?v=20260511">
 </head>
 <body>
 
     <!-- Header -->
     <header id="app-header">
         <div class="header-top">
-            <h1 id="app-title" title="Tap to toggle PO Entry mode">InTracker</h1>
+            <h1 id="app-title" title="Tap to toggle PO Entry mode">InTrack</h1>
             <div class="header-actions">
                 <button id="btn-exit-po" class="btn-exit-po hidden">Exit PO Entry</button>
                 <button id="btn-truck-stock" class="btn-icon" title="My Truck Stock" disabled>&#128666; Truck</button>
@@ -228,6 +228,7 @@
                 <button id="btn-admin-rename" class="btn-primary">&#9998; Rename Location</button>
                 <button id="btn-admin-new-location" class="btn-primary">&#43; New Location</button>
                 <button id="btn-admin-manage-hidden" class="btn-primary">&#128065; Manage Hidden Locations</button>
+                <button id="btn-admin-city-groups" class="btn-primary">&#127968; City Groups</button>
                 <button id="btn-admin-cancel" class="btn-ghost">Cancel</button>
             </div>
         </div>
@@ -289,9 +290,26 @@
         </div>
     </div>
 
+    <!-- City Groups Modal -->
+    <div id="modal-city-groups" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-box" style="max-width:500px;width:95vw">
+            <div class="modal-title">&#127968; City Groups</div>
+            <p class="modal-hint">Associate locations with a city. Share <code style="font-size:0.82em">?city=CityName</code> in the URL to filter to that city &mdash; it becomes the visitor's default view.</p>
+            <div id="city-groups-list" style="max-height:52vh;overflow-y:auto;display:flex;flex-direction:column;gap:12px;margin-top:8px"></div>
+            <div id="city-groups-error" class="modal-error hidden" style="margin-top:8px"></div>
+            <div class="modal-actions" style="flex-direction:column;gap:8px;margin-top:12px">
+                <button id="btn-add-city" class="btn-secondary">&#43; Add City</button>
+                <div style="display:flex;gap:8px">
+                    <button id="btn-city-groups-save" class="btn-primary">Save</button>
+                    <button id="btn-city-groups-cancel" class="btn-ghost">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast notification -->
     <div id="toast" class="toast hidden"></div>
 
-    <script src="js/app.js?v=20260509b"></script>
+    <script src="js/app.js?v=20260511"></script>
 </body>
 </html>

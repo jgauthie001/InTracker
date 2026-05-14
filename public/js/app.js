@@ -85,6 +85,15 @@ const btnAdminRename        = $('btn-admin-rename');
 const btnAdminNewLocation   = $('btn-admin-new-location');
 const btnAdminManageHidden  = $('btn-admin-manage-hidden');
 const btnAdminCancel        = $('btn-admin-cancel');
+const btnAdminCityGroups    = $('btn-admin-city-groups');
+
+// City groups modal
+const modalCityGroups     = $('modal-city-groups');
+const cityGroupsList      = $('city-groups-list');
+const cityGroupsError     = $('city-groups-error');
+const btnAddCity          = $('btn-add-city');
+const btnCityGroupsSave   = $('btn-city-groups-save');
+const btnCityGroupsCancel = $('btn-city-groups-cancel');
 
 // Manage hidden locations modal
 const modalManageHidden      = $('modal-manage-hidden');
@@ -233,15 +242,29 @@ function unhideLocationForUser(name) {
     setUserHidden(getUserHidden().filter(n => n !== name));
 }
 
+// ─── City Filter ───────────────────────────────────────────────────────────────────
+function getCityFilter() {
+    try { return JSON.parse(localStorage.getItem('intracker_city_filter') || 'null'); } catch { return null; }
+}
+function setCityFilter(city, locations) {
+    localStorage.setItem('intracker_city_filter', JSON.stringify({ city, locations }));
+}
+function clearCityFilter() {
+    localStorage.removeItem('intracker_city_filter');
+}
+
+
 async function loadLocations() {
     try {
         const res = await fetch('/api/locations');
         const locations = await res.json();
         selectLocation.innerHTML = '<option value="">— Select a Location —</option>';
         const userHidden = getUserHidden();
+        const cityFilter = getCityFilter();
         locations.sort().forEach(loc => {
             if (loc.startsWith('truck_')) return; // truck locations only appear in truck mode
             if (userHidden.includes(loc)) return;  // user-level hide
+            if (cityFilter && !cityFilter.locations.includes(loc)) return; // city filter
             const opt = document.createElement('option');
             opt.value = loc;
             opt.textContent = loc.replace(/_/g, ' ');
@@ -511,7 +534,7 @@ function renderInventory(filter = '') {
         const belowPar = !state.isTruckMode && parLevel > 0 && qty < parLevel;
         const descLine = desc + (equip ? ` \u2022 ${equip}` : '');
         const disabled = !state.user ? 'disabled' : '';
-        const qtyClass = qty === 0 ? 'zero' : qty <= 5 ? 'low' : '';
+        const qtyClass = qty === 0 ? 'zero' : '';
         const orderClass = onOrder > 0 ? ' has-order' : '';
         const parDisplay = (!state.isTruckMode && parLevel > 0) ? parLevel : '&mdash;';
         const poMode = !state.hideOrder && !state.isTruckMode;
@@ -557,7 +580,7 @@ async function handleParChange(input) {
         const res = await fetch(`/api/parts/${encodeURIComponent(pn)}/par_level`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ par_level: newPar })
+            body: JSON.stringify({ par_level: newPar, location: activeLocation() })
         });
         const data = await res.json();
         if (!res.ok) { showToast(data.error || 'Error saving par level', 3000); input.value = currentPar; input.disabled = false; return; }
@@ -588,7 +611,7 @@ async function handleOrderChange(input) {
         const res = await fetch(`/api/orders/${encodeURIComponent(pn)}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ quantity_on_order: newOnOrder })
+            body: JSON.stringify({ quantity_on_order: newOnOrder, location: activeLocation() })
         });
         const data = await res.json();
         if (!res.ok) { showToast(data.error || 'Error saving on-order quantity', 3000); input.value = currentOnOrder; input.disabled = false; return; }
@@ -625,7 +648,7 @@ function updateCardDisplay(pn, newQty, newOnOrder) {
     const input = partsList.querySelector(`.part-qty-input[data-pn="${escapeAttr(pn)}"]`);
     if (!input) return;
     input.value = newQty;
-    input.className = `part-qty-input ${newQty === 0 ? 'zero' : newQty <= 5 ? 'low' : ''}`;
+    input.className = `part-qty-input ${newQty === 0 ? 'zero' : ''}`;
     const item = state.inventory.find(i => i.part_number === pn);
     const card = input.closest('.part-card');
     if (card && item) {
@@ -987,15 +1010,20 @@ inputOrdersCsv.addEventListener('change', () => {
     const reader = new FileReader();
     reader.onload = async (e) => {
         const csv = e.target.result;
+        const loc = activeLocation();
+        if (!loc) { showToast('Select a location before uploading a PO', 3000); return; }
         try {
             const res = await fetch('/api/orders/upload', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ csv })
+                body: JSON.stringify({ csv, location: loc })
             });
             const data = await res.json();
             if (!res.ok) { showToast(data.error || 'Upload failed', 3000); return; }
-            showToast(`PO uploaded: ${data.merged} line${data.merged === 1 ? '' : 's'} added`);
+            let msg = `PO uploaded: ${data.merged} line${data.merged === 1 ? '' : 's'} added`;
+            if (data.newToMaster > 0) msg += ` (${data.newToMaster} new — added to master list)`;
+            if (data.skipped > 0) msg += `, ${data.skipped} invalid format ignored`;
+            showToast(msg, 4000);
             if (activeLocation()) await loadInventory();
         } catch {
             showToast('Upload failed \u2014 server error', 3000);
@@ -1026,8 +1054,9 @@ inputRecPartsCsv.addEventListener('change', () => {
             });
             const data = await res.json();
             if (!res.ok) { showToast(data.error || 'Receive failed', 3000); return; }
-            const msg = `Received: ${data.received} part${data.received === 1 ? '' : 's'} added` +
-                (data.skipped > 0 ? `, ${data.skipped} not found` : '');
+            let msg = `Received: ${data.received} part${data.received === 1 ? '' : 's'}`;
+            if (data.newToMaster > 0) msg += ` (${data.newToMaster} new — added to master list)`;
+            if (data.skipped > 0) msg += `, ${data.skipped} invalid format ignored`;
             showToast(msg, 4000);
             await loadInventory();
         } catch {
@@ -1134,8 +1163,8 @@ function renderTruckView(filter = '') {
         const equip    = getEquipment(item);
         const descLine = desc + (equip ? ` \u2022 ${equip}` : '');
         const { locQty, truckQty } = item;
-        const locClass   = locQty   === 0 ? 'zero' : locQty   <= 5 ? 'low' : '';
-        const truckClass = truckQty === 0 ? 'zero' : truckQty <= 5 ? 'low' : '';
+        const locClass   = locQty   === 0 ? 'zero' : '';
+        const truckClass = truckQty === 0 ? 'zero' : '';
         const noUser = !state.user;
         const card = document.createElement('div');
         card.className = 'truck-card';
@@ -1174,11 +1203,11 @@ function updateTruckCard(pn) {
     const truckInput = card.querySelector('.truck-qty-input');
     if (locVal) {
         locVal.textContent = newLocQty;
-        locVal.className = `truck-qty-val loc-val ${newLocQty === 0 ? 'zero' : newLocQty <= 5 ? 'low' : ''}`.trim();
+        locVal.className = `truck-qty-val loc-val ${newLocQty === 0 ? 'zero' : ''}`.trim();
     }
     if (truckInput) {
         truckInput.value = newTruckQty;
-        truckInput.className = `truck-qty-input ${newTruckQty === 0 ? 'zero' : newTruckQty <= 5 ? 'low' : ''}`.trim();
+        truckInput.className = `truck-qty-input ${newTruckQty === 0 ? 'zero' : ''}`.trim();
     }
     const toTruckBtnEl = card.querySelector('.btn-to-truck');
     const toLocBtnEl   = card.querySelector('.btn-to-loc');
@@ -1435,6 +1464,11 @@ btnAdminManageHidden.addEventListener('click', () => {
     modalManageHidden.classList.remove('hidden');
 });
 
+btnAdminCityGroups.addEventListener('click', () => {
+    modalAdminChoice.classList.add('hidden');
+    openCityGroupsModal();
+});
+
 btnManageHiddenRestore.addEventListener('click', async () => {
     const checked = [...hiddenLocList.querySelectorAll('input[type="checkbox"]:checked')];
     if (checked.length === 0) { showToast('No locations selected'); return; }
@@ -1456,8 +1490,10 @@ async function openManageLocations() {
         const res = await fetch('/api/locations');
         const locations = await res.json();
         const userHidden = getUserHidden();
+        const cityFilter = getCityFilter();
         manageLocList.innerHTML = '';
-        const nonTruck = locations.filter(l => !l.startsWith('truck_')).sort();
+        let nonTruck = locations.filter(l => !l.startsWith('truck_')).sort();
+        if (cityFilter) nonTruck = nonTruck.filter(l => cityFilter.locations.includes(l));
         if (nonTruck.length === 0) {
             manageLocList.innerHTML = '<p style="opacity:0.6;font-size:0.9rem;margin:0">No locations found.</p>';
         } else {
@@ -1575,6 +1611,164 @@ function renderHiddenLocList() {
         hiddenLocList.appendChild(row);
     });
 }
+
+// ─── City Groups Modal ────────────────────────────────────────────────────────
+let _cityGroupsAllLocs = [];
+
+async function openCityGroupsModal() {
+    cityGroupsError.classList.add('hidden');
+    cityGroupsList.innerHTML = '<p style="opacity:0.6;font-size:0.9rem;margin:0">Loading\u2026</p>';
+    modalCityGroups.classList.remove('hidden');
+    try {
+        const [locsRes, groupsRes] = await Promise.all([
+            fetch('/api/locations'),
+            fetch('/api/city-groups')
+        ]);
+        const allLocs = await locsRes.json();
+        _cityGroupsAllLocs = allLocs.filter(l => !l.startsWith('truck_')).sort();
+        const groups = await groupsRes.json();
+        renderCityGroupsList(groups);
+    } catch {
+        cityGroupsList.innerHTML = '<p style="color:var(--warn);margin:0">Failed to load data.</p>';
+    }
+}
+
+function renderCityGroupsList(groups) {
+    cityGroupsList.innerHTML = '';
+    const entries = Object.entries(groups);
+    if (entries.length === 0) {
+        const p = document.createElement('p');
+        p.style.cssText = 'opacity:0.6;font-size:0.9rem;margin:0';
+        p.textContent = 'No city groups defined yet. Click \u201c+ Add City\u201d to create one.';
+        cityGroupsList.appendChild(p);
+    } else {
+        entries.forEach(([city, locs]) => addCityGroupEntry(city, locs));
+    }
+}
+
+function addCityGroupEntry(city, locs) {
+    // Remove placeholder paragraph if present
+    const placeholder = cityGroupsList.querySelector('p');
+    if (placeholder) placeholder.remove();
+
+    const entry = document.createElement('div');
+    entry.className = 'city-group-entry';
+    entry.style.cssText = 'border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;background:var(--surface2)';
+
+    // Header row: city name input + remove button
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:8px';
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.placeholder = 'City name\u2026';
+    nameInput.value = city || '';
+    nameInput.maxLength = 60;
+    nameInput.style.cssText = 'flex:1;padding:5px 8px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:0.9rem';
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'btn-ghost';
+    removeBtn.textContent = '\u2715';
+    removeBtn.style.cssText = 'padding:4px 8px;font-size:0.85rem';
+    removeBtn.title = 'Remove this city group';
+    removeBtn.addEventListener('click', () => entry.remove());
+
+    header.appendChild(nameInput);
+    header.appendChild(removeBtn);
+    entry.appendChild(header);
+
+    // Location checkboxes
+    if (_cityGroupsAllLocs.length > 0) {
+        const grid = document.createElement('div');
+        grid.style.cssText = 'display:flex;flex-direction:column;gap:5px';
+        _cityGroupsAllLocs.forEach(loc => {
+            const row = document.createElement('label');
+            row.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:0.88rem;cursor:pointer;padding:2px 0';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.value = loc;
+            cb.checked = Array.isArray(locs) && locs.includes(loc);
+            const span = document.createElement('span');
+            span.textContent = loc.replace(/_/g, ' ');
+            row.appendChild(cb);
+            row.appendChild(span);
+            grid.appendChild(row);
+        });
+        entry.appendChild(grid);
+    } else {
+        const note = document.createElement('p');
+        note.style.cssText = 'font-size:0.85rem;opacity:0.6;margin:0';
+        note.textContent = 'No locations available.';
+        entry.appendChild(note);
+    }
+
+    cityGroupsList.appendChild(entry);
+}
+
+btnAddCity.addEventListener('click', () => {
+    addCityGroupEntry('', []);
+    const inputs = cityGroupsList.querySelectorAll('input[type="text"]');
+    if (inputs.length) setTimeout(() => inputs[inputs.length - 1].focus(), 50);
+});
+
+btnCityGroupsSave.addEventListener('click', async () => {
+    const entries = cityGroupsList.querySelectorAll('.city-group-entry');
+    const groups = {};
+    let valid = true;
+    cityGroupsError.classList.add('hidden');
+
+    entries.forEach(entry => {
+        const nameInput = entry.querySelector('input[type="text"]');
+        const cityName = nameInput ? nameInput.value.trim() : '';
+        if (!cityName) { valid = false; return; }
+        const checked = [...entry.querySelectorAll('input[type="checkbox"]:checked')].map(cb => cb.value);
+        groups[cityName] = checked;
+    });
+
+    if (!valid) {
+        cityGroupsError.textContent = 'All city entries must have a name.';
+        cityGroupsError.classList.remove('hidden');
+        return;
+    }
+
+    btnCityGroupsSave.disabled = true;
+    try {
+        const res = await fetch('/api/city-groups', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(groups)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            cityGroupsError.textContent = data.error || 'Failed to save.';
+            cityGroupsError.classList.remove('hidden');
+            return;
+        }
+        // Refresh active city filter if its city still exists
+        const filter = getCityFilter();
+        if (filter) {
+            const cityKey = Object.keys(data).find(k => k.toLowerCase() === filter.city.toLowerCase());
+            if (cityKey) setCityFilter(cityKey, data[cityKey]);
+            else clearCityFilter();
+        }
+        await loadLocations();
+        modalCityGroups.classList.add('hidden');
+        showToast('City groups saved');
+    } catch {
+        cityGroupsError.textContent = 'Server error. Please try again.';
+        cityGroupsError.classList.remove('hidden');
+    } finally {
+        btnCityGroupsSave.disabled = false;
+    }
+});
+
+btnCityGroupsCancel.addEventListener('click', () => {
+    modalCityGroups.classList.add('hidden');
+});
+
+modalCityGroups.addEventListener('click', e => {
+    if (e.target === modalCityGroups) modalCityGroups.classList.add('hidden');
+});
 
 // ─── Rename via parts-list header click (only in PO Entry mode) ──────────────
 document.getElementById('parts-list-header').addEventListener('click', () => {
@@ -1713,6 +1907,29 @@ function escapeAttr(str) {
     state.user = saved;
     applyUserState();
     if (state.user.trim()) scheduleTruckDropdown();
+
+    // Handle ?city= URL parameter — sets city filter as the new default
+    const urlParams = new URLSearchParams(window.location.search);
+    const cityParam = urlParams.get('city');
+    if (cityParam !== null) {
+        if (!cityParam || cityParam.toLowerCase() === 'all') {
+            clearCityFilter();
+        } else {
+            try {
+                const cgRes = await fetch('/api/city-groups');
+                const groups = await cgRes.json();
+                const cityKey = Object.keys(groups).find(k => k.toLowerCase() === cityParam.toLowerCase());
+                if (cityKey) {
+                    setCityFilter(cityKey, groups[cityKey]);
+                } else {
+                    showToast(`City \u201c${cityParam}\u201d not found in city groups`, 4000);
+                }
+            } catch {
+                showToast('Could not load city groups', 3000);
+            }
+        }
+        history.replaceState({}, '', window.location.pathname);
+    }
 
     await loadLocations();
     await loadPartsDictionary();

@@ -1,0 +1,2 @@
+timestamp,user,location,part_number,action,quantity,balance_after
+2026-03-24T17:05:43.271Z,Joseph Gauthier,truck_TestUser,53000600,add,1,12026-03-20T08:12:00.000Z

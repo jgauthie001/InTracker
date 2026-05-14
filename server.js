@@ -20,9 +20,19 @@ const STATIC_DIR = process.env.STATIC_DIR
 const LOCATIONS_DIR = path.join(DATA_DIR, 'locations');
 const PARTS_FILE = path.join(DATA_DIR, 'parts.csv');
 const TRANSACTIONS_FILE = path.join(DATA_DIR, 'transactions.csv');
+const TRANSACTIONS_DIR  = path.join(DATA_DIR, 'transactions');
 const HIDDEN_FILE    = path.join(DATA_DIR, 'hidden_locations.json');
+const CITY_GROUPS_FILE = path.join(DATA_DIR, 'city_groups.json');
 const BACKUPS_DIR    = path.join(DATA_DIR, 'backups');
-const ORDERS_FILE    = path.join(DATA_DIR, 'orders.csv');
+const ORDERS_DIR     = path.join(DATA_DIR, 'orders');
+const PAR_LEVELS_FILE = path.join(DATA_DIR, 'par_levels.json');
+function ordersFileForLocation(safe) { return path.join(ORDERS_DIR, `${safe}.csv`); }
+async function readParLevels() {
+    try { return JSON.parse(await fsp.readFile(PAR_LEVELS_FILE, 'utf8')); } catch { return {}; }
+}
+async function writeParLevels(data) {
+    await fsp.writeFile(PAR_LEVELS_FILE, JSON.stringify(data, null, 2), 'utf8');
+}
 
 app.use(cors());
 app.use(express.json());
@@ -35,6 +45,12 @@ const serveIndex = (req, res) => {
 };
 app.get('/', serveIndex);
 app.get('/index.html', serveIndex);
+
+// /city/:name  →  redirect to /?city=:name  (clean sharable URL)
+app.get('/city/:name', (req, res) => {
+    const city = encodeURIComponent(req.params.name);
+    res.redirect(`/?city=${city}`);
+});
 
 app.use(express.static(STATIC_DIR));
 
@@ -83,6 +99,33 @@ function rowsToCSV(headers, rows) {
     return [headerLine, ...dataLines].join('\n');
 }
 
+// Reads orders.csv text (with OR without a header row) → { [part_number]: qty } map
+// Guards against headerless files where parseCSV would treat the first data row as headers.
+function parseOrdersCSV(text) {
+    const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
+    if (lines.length === 0) return {};
+    const map = {};
+    const firstCol = lines[0].split(',')[0].trim();
+    // If the first column looks like a header word (not an 8-digit number), skip it
+    const isHeader = !/^\d+$/.test(firstCol);
+    const dataLines = isHeader ? lines.slice(1) : lines;
+    for (const line of dataLines) {
+        const cols = line.split(',').map(s => s.trim());
+        const pn  = cols[0] || '';
+        const qty = parseInt(cols[1], 10) || 0;
+        if (pn && qty > 0) map[pn] = qty;
+    }
+    return map;
+}
+
+// Writes a { [part_number]: qty } map back to orders.csv format (always with header)
+function ordersMapToCSV(map) {
+    const rows = Object.entries(map)
+        .filter(([, q]) => q > 0)
+        .map(([pn, q]) => ({ part_number: pn, quantity_on_order: q }));
+    return rowsToCSV(['part_number', 'quantity_on_order'], rows);
+}
+
 async function ensureTransactionsFile() {
     try {
         await fsp.access(TRANSACTIONS_FILE);
@@ -91,11 +134,29 @@ async function ensureTransactionsFile() {
     }
 }
 
-async function ensureOrdersFile() {
+function txFileForLocation(safe) {
+    return path.join(TRANSACTIONS_DIR, `${safe}.csv`);
+}
+
+async function appendTransaction(safe, line) {
+    // Write to per-location file
+    const locFile = txFileForLocation(safe);
+    try { await fsp.access(locFile); } catch {
+        await fsp.mkdir(TRANSACTIONS_DIR, { recursive: true });
+        await fsp.writeFile(locFile, 'timestamp,user,location,part_number,action,quantity,balance_after\n', 'utf8');
+    }
+    await fsp.appendFile(locFile, line, 'utf8');
+    // Mirror to main transactions.csv
+    await ensureTransactionsFile();
+    await fsp.appendFile(TRANSACTIONS_FILE, line, 'utf8');
+}
+
+async function ensureOrdersFile(filePath) {
     try {
-        await fsp.access(ORDERS_FILE);
+        await fsp.access(filePath);
     } catch {
-        await fsp.writeFile(ORDERS_FILE, 'part_number,quantity_on_order\n', 'utf8');
+        await fsp.mkdir(path.dirname(filePath), { recursive: true });
+        await fsp.writeFile(filePath, 'part_number,quantity_on_order\n', 'utf8');
     }
 }
 
@@ -121,9 +182,18 @@ async function runDailyBackup() {
     const filesToBackup = [];
     try { await fsp.access(PARTS_FILE);        filesToBackup.push(PARTS_FILE);        } catch {}
     try { await fsp.access(TRANSACTIONS_FILE); filesToBackup.push(TRANSACTIONS_FILE); } catch {}
+    try { await fsp.access(PAR_LEVELS_FILE);   filesToBackup.push(PAR_LEVELS_FILE);   } catch {}
+    try {
+        const txFiles = await fsp.readdir(TRANSACTIONS_DIR);
+        txFiles.filter(f => f.endsWith('.csv')).forEach(f => filesToBackup.push(path.join(TRANSACTIONS_DIR, f)));
+    } catch {}
     try {
         const locFiles = await fsp.readdir(LOCATIONS_DIR);
         locFiles.filter(f => f.endsWith('.csv')).forEach(f => filesToBackup.push(path.join(LOCATIONS_DIR, f)));
+    } catch {}
+    try {
+        const ordFiles = await fsp.readdir(ORDERS_DIR);
+        ordFiles.filter(f => f.endsWith('.csv')).forEach(f => filesToBackup.push(path.join(ORDERS_DIR, f)));
     } catch {}
     for (const file of filesToBackup) {
         try { await fsp.copyFile(file, path.join(backupDir, path.basename(file))); } catch {}
@@ -144,22 +214,36 @@ app.get('/api/parts', async (req, res) => {
     }
 });
 
-// PUT /api/parts/:partNumber/par_level — update par level in parts.csv
+// PUT /api/parts/:partNumber/par_level — update par level (per-location or global)
+// Body: { par_level: number, location?: string }
+// If location is provided, writes to par_levels.json for that location only.
+// Otherwise writes the global default in parts.csv.
 app.put('/api/parts/:partNumber/par_level', async (req, res) => {
     try {
         const pn  = req.params.partNumber;
         const par = parseInt(req.body.par_level, 10);
         if (isNaN(par) || par < 0) return res.status(400).json({ error: 'par_level must be >= 0' });
 
+        const locationRaw = req.body.location;
+        if (locationRaw) {
+            // Per-location: write to par_levels.json
+            const safe = locationRaw.replace(/[^a-zA-Z0-9_\-]/g, '');
+            const all = await readParLevels();
+            if (!all[safe]) all[safe] = {};
+            all[safe][pn] = par;
+            await writeParLevels(all);
+            return res.json({ part_number: pn, par_level: par, location: safe });
+        }
+
+        // Global default: write to parts.csv
         const text = await fsp.readFile(PARTS_FILE, 'utf8');
         const { headers, rows } = parseCSV(text);
-        const pnCol = headers.find(h => /part.?num|part.?no|partno|pn\b/i.test(h)) || headers[0];
+        const pnCol = headers.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || headers[0];
         const parKey = headers.find(h => /par_level|parlevel/i.test(h));
         if (!parKey) return res.status(400).json({ error: 'par_level column not found in parts.csv' });
 
         const idx = rows.findIndex(r => r[pnCol] === pn);
         if (idx === -1) {
-            // Part not in master list yet — add a minimal row
             const newRow = {};
             headers.forEach(h => { newRow[h] = ''; });
             newRow[pnCol] = pn;
@@ -263,9 +347,8 @@ app.post('/api/locations/:name/rename', async (req, res) => {
         // Log the rename itself
         const { user } = req.body;
         const ts = new Date().toISOString();
-        await fsp.appendFile(TRANSACTIONS_FILE,
-            `\n${ts},${escapeCSVField((user || '').trim())},${escapeCSVField(newSafe)},${escapeCSVField(newSafe)},rename_location,0,0`,
-            'utf8');
+        await appendTransaction(newSafe,
+            `\n${ts},${escapeCSVField((user || '').trim())},${escapeCSVField(newSafe)},${escapeCSVField(newSafe)},rename_location,0,0`);
 
         res.json({ oldName: oldSafe, newName: newSafe });
     } catch (err) {
@@ -294,7 +377,7 @@ app.post('/api/locations', async (req, res) => {
             const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
             const { headers, rows } = parseCSV(partsText);
             // Detect the part number column (flexible name matching)
-            const pnCol = headers.find(h => /part.?num|part.?no|partno|pn\b/i.test(h)) || headers[0];
+            const pnCol = headers.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || headers[0];
             rows.forEach(row => {
                 const pn = row[pnCol] || '';
                 if (pn) csvContent += `${pn},0\n`;
@@ -329,7 +412,7 @@ app.get('/api/inventory/:location', async (req, res) => {
             const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
             const { headers, rows } = parseCSV(partsText);
             partsHeaders = headers;
-            const pnCol = headers.find(h => /part.?num|part.?no|partno|pn\b/i.test(h)) || headers[0];
+            const pnCol = headers.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || headers[0];
             rows.forEach(row => {
                 const pn = row[pnCol];
                 if (pn) { partsMap[pn] = row; partsPnList.push(pn); }
@@ -374,21 +457,26 @@ app.get('/api/inventory/:location', async (req, res) => {
             ...Object.keys(qtyMap).filter(pn => !partsMap[pn])
         ];
 
-        // Load on-order quantities
+        // Load on-order quantities (per-location)
         let ordersMap = {};
         try {
-            await ensureOrdersFile();
-            const ordersText = await fsp.readFile(ORDERS_FILE, 'utf8');
-            const { rows: orderRows } = parseCSV(ordersText);
-            orderRows.forEach(r => { ordersMap[r.part_number] = parseInt(r.quantity_on_order, 10) || 0; });
+            const ordersFile = ordersFileForLocation(safe);
+            await ensureOrdersFile(ordersFile);
+            const ordersText = await fsp.readFile(ordersFile, 'utf8');
+            ordersMap = parseOrdersCSV(ordersText);
         } catch { /* no orders file yet */ }
 
-        const inventory = orderedPns.map(pn => ({
-            part_number: pn,
-            quantity: qtyMap[pn],
-            on_order: ordersMap[pn] || 0,
-            ...(partsMap[pn] || {})
-        }));
+        // Load per-location par levels and overlay onto global par_level
+        const allParLevels = await readParLevels();
+        const locationParLevels = allParLevels[safe] || {};
+
+        const inventory = orderedPns.map(pn => {
+            const base = { part_number: pn, quantity: qtyMap[pn], on_order: ordersMap[pn] || 0, ...(partsMap[pn] || {}) };
+            if (Object.prototype.hasOwnProperty.call(locationParLevels, pn)) {
+                base.par_level = String(locationParLevels[pn]);
+            }
+            return base;
+        });
 
         res.json({ inventory, partsHeaders });
     } catch (err) {
@@ -433,28 +521,23 @@ app.post('/api/inventory/:location/adjust', async (req, res) => {
         await fsp.writeFile(locFile, rowsToCSV(allHeaders, rows), 'utf8');
 
         // Append to transaction log
-        await ensureTransactionsFile();
         const ts = new Date().toISOString();
         const logLine = `\n${ts},${escapeCSVField(user.trim())},${escapeCSVField(safe)},${escapeCSVField(part_number)},${action},${qty},${newQty}`;
-        await fsp.appendFile(TRANSACTIONS_FILE, logLine, 'utf8');
+        await appendTransaction(safe, logLine);
 
         // When adding stock, reduce on-order quantity accordingly
         let newOnOrder = undefined;
         if (action === 'add') {
             try {
-                await ensureOrdersFile();
-                const ordersText = await fsp.readFile(ORDERS_FILE, 'utf8');
-                const { rows: orderRows } = parseCSV(ordersText);
-                const orderMap = {};
-                orderRows.forEach(r => { orderMap[r.part_number] = parseInt(r.quantity_on_order, 10) || 0; });
+                const ordersFile = ordersFileForLocation(safe);
+                await ensureOrdersFile(ordersFile);
+                const ordersText = await fsp.readFile(ordersFile, 'utf8');
+                const orderMap = parseOrdersCSV(ordersText);
                 const onOrder = orderMap[part_number] || 0;
                 if (onOrder > 0) {
                     orderMap[part_number] = Math.max(0, onOrder - qty);
                     newOnOrder = orderMap[part_number];
-                    const newOrderRows = Object.entries(orderMap)
-                        .filter(([, q]) => q > 0)
-                        .map(([p, q]) => ({ part_number: p, quantity_on_order: q }));
-                    await fsp.writeFile(ORDERS_FILE, rowsToCSV(['part_number', 'quantity_on_order'], newOrderRows), 'utf8');
+                    await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
                 } else {
                     newOnOrder = 0;
                 }
@@ -478,24 +561,36 @@ function escapeCSVField(val) {
 
 app.get('/api/transactions', async (req, res) => {
     try {
-        await ensureTransactionsFile();
-        const text = await fsp.readFile(TRANSACTIONS_FILE, 'utf8');
-        const { headers, rows } = parseCSV(text);
+        let rows;
+        if (req.query.location) {
+            const safe = req.query.location.replace(/[^a-zA-Z0-9_\-]/g, '');
+            const locFile = txFileForLocation(safe);
+            try {
+                rows = parseCSV(await fsp.readFile(locFile, 'utf8')).rows;
+            } catch {
+                // Per-location file not yet created — fall back to main file
+                await ensureTransactionsFile();
+                rows = parseCSV(await fsp.readFile(TRANSACTIONS_FILE, 'utf8')).rows
+                    .filter(r => r.location === safe);
+            }
+        } else {
+            await ensureTransactionsFile();
+            rows = parseCSV(await fsp.readFile(TRANSACTIONS_FILE, 'utf8')).rows;
+        }
 
         let filtered = rows;
-        if (req.query.location) filtered = filtered.filter(r => r.location === req.query.location);
         if (req.query.part_number) filtered = filtered.filter(r => r.part_number === req.query.part_number);
         if (req.query.user) filtered = filtered.filter(r => r.user.toLowerCase().includes(req.query.user.toLowerCase()));
         if (req.query.from) filtered = filtered.filter(r => r.timestamp >= req.query.from);
-        if (req.query.to) filtered = filtered.filter(r => r.timestamp <= req.query.to);
+        if (req.query.to)   filtered = filtered.filter(r => r.timestamp <= req.query.to);
 
         // Return newest first
         filtered.reverse();
 
-        const page = parseInt(req.query.page, 10) || 1;
+        const page     = parseInt(req.query.page, 10) || 1;
         const pageSize = parseInt(req.query.pageSize, 10) || 50;
-        const total = filtered.length;
-        const paged = filtered.slice((page - 1) * pageSize, page * pageSize);
+        const total    = filtered.length;
+        const paged    = filtered.slice((page - 1) * pageSize, page * pageSize);
 
         res.json({ total, page, pageSize, rows: paged });
     } catch (err) {
@@ -505,18 +600,15 @@ app.get('/api/transactions', async (req, res) => {
 
 // ─── API: Orders ─────────────────────────────────────────────────────────────
 
-// GET /api/orders — returns { part_number: qty_on_order } map
+// GET /api/orders?location= — returns { part_number: qty_on_order } map for a location
 app.get('/api/orders', async (req, res) => {
     try {
-        await ensureOrdersFile();
-        const text = await fsp.readFile(ORDERS_FILE, 'utf8');
-        const { rows } = parseCSV(text);
-        const orders = {};
-        rows.forEach(r => {
-            const qty = parseInt(r.quantity_on_order, 10) || 0;
-            if (qty > 0) orders[r.part_number] = qty;
-        });
-        res.json(orders);
+        const loc = (req.query.location || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!loc) return res.status(400).json({ error: 'location query parameter required' });
+        const ordersFile = ordersFileForLocation(loc);
+        await ensureOrdersFile(ordersFile);
+        const text = await fsp.readFile(ordersFile, 'utf8');
+        res.json(parseOrdersCSV(text));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -525,32 +617,63 @@ app.get('/api/orders', async (req, res) => {
 // POST /api/orders/upload — body: { csv: "..." } — merges (adds) quantities
 app.post('/api/orders/upload', async (req, res) => {
     try {
-        const { csv } = req.body;
+        const { csv, location } = req.body;
         if (!csv || typeof csv !== 'string') return res.status(400).json({ error: 'CSV content required' });
+        const safeLoc = (location || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!safeLoc) return res.status(400).json({ error: 'location required — select a location before uploading a PO' });
 
         const { headers, rows } = parseCSV(csv);
-        const pnCol  = headers.find(h => /part.?num|part.?no|partno|\bpn\b/i.test(h)) || headers[0];
-        const qtyCol = headers.find(h => /qty|quantity/i.test(h) && h !== pnCol) || headers[1];
-        if (!pnCol || !qtyCol) return res.status(400).json({ error: 'Could not detect part_number and quantity columns' });
+        // No silent fallback to column index — require detectable headers
+        const pnCol  = headers.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h));
+        const qtyCol = headers.find(h => /qty|quantity/i.test(h) && h !== pnCol);
+        if (!pnCol) return res.status(400).json({ error: 'Could not detect a part number column (expected: part_number, pn, partno, sku, etc.)' });
+        if (!qtyCol) return res.status(400).json({ error: 'Could not detect a quantity column (expected: qty, quantity)' });
 
-        await ensureOrdersFile();
-        const existingText = await fsp.readFile(ORDERS_FILE, 'utf8');
-        const { rows: existingRows } = parseCSV(existingText);
-        const orderMap = {};
-        existingRows.forEach(r => { orderMap[r.part_number] = parseInt(r.quantity_on_order, 10) || 0; });
+        // Part numbers must be exactly 8 digits
+        const PN_FORMAT = /^\d{8}$/;
 
-        let added = 0;
+        const ordersFile = ordersFileForLocation(safeLoc);
+        await ensureOrdersFile(ordersFile);
+        const existingText = await fsp.readFile(ordersFile, 'utf8');
+        const orderMap = parseOrdersCSV(existingText);
+
+        let added = 0, skipped = 0;
+        const newPns = [];
         rows.forEach(row => {
             const pn  = (row[pnCol]  || '').trim();
             const qty = parseInt(row[qtyCol], 10) || 0;
-            if (pn && qty > 0) { orderMap[pn] = (orderMap[pn] || 0) + qty; added++; }
+            if (!PN_FORMAT.test(pn)) { skipped++; return; }
+            if (qty > 0) {
+                const isNew = !(pn in orderMap);
+                orderMap[pn] = (orderMap[pn] || 0) + qty;
+                added++;
+                if (isNew) newPns.push(pn);
+            }
         });
 
-        const newRows = Object.entries(orderMap)
-            .filter(([, q]) => q > 0)
-            .map(([pn, q]) => ({ part_number: pn, quantity_on_order: q }));
-        await fsp.writeFile(ORDERS_FILE, rowsToCSV(['part_number', 'quantity_on_order'], newRows), 'utf8');
-        res.json({ merged: added, total: newRows.length });
+        await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
+
+        // Add brand-new part numbers to master parts.csv
+        if (newPns.length > 0) {
+            try {
+                const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
+                const { headers: partsHeaders, rows: partsRows } = parseCSV(partsText);
+                const partsPnCol = partsHeaders.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || partsHeaders[0];
+                const existingPns = new Set(partsRows.map(r => (r[partsPnCol] || '').trim()));
+                newPns.forEach(pn => {
+                    if (!existingPns.has(pn)) {
+                        const newRow = {};
+                        partsHeaders.forEach(h => { newRow[h] = ''; });
+                        newRow[partsPnCol] = pn;
+                        partsRows.push(newRow);
+                    }
+                });
+                await fsp.writeFile(PARTS_FILE, rowsToCSV(partsHeaders, partsRows), 'utf8');
+            } catch { /* parts file not available — non-fatal */ }
+        }
+
+        const total = Object.values(orderMap).filter(q => q > 0).length;
+        res.json({ merged: added, skipped, newToMaster: newPns.length, total });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -565,64 +688,98 @@ app.post('/api/inventory/:location/bulk-receive', async (req, res) => {
         if (!user || !user.trim()) return res.status(400).json({ error: 'User name required' });
 
         const { headers: csvHeaders, rows: csvRows } = parseCSV(csv);
-        const pnCol  = csvHeaders.find(h => /part.?num|part.?no|partno|\bpn\b/i.test(h)) || csvHeaders[0];
-        const qtyCol = csvHeaders.find(h => /qty|quantity/i.test(h) && h !== pnCol) || csvHeaders[1];
-        if (!pnCol || !qtyCol) return res.status(400).json({ error: 'Could not detect part_number and quantity columns' });
+        // Gap 4: require detectable headers — no silent fallback to column index
+        const pnCol  = csvHeaders.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h));
+        const qtyCol = csvHeaders.find(h => /qty|quantity/i.test(h) && h !== pnCol);
+        if (!pnCol) return res.status(400).json({ error: 'Could not detect a part number column (expected: part_number, pn, partno, sku, etc.)' });
+        if (!qtyCol) return res.status(400).json({ error: 'Could not detect a quantity column (expected: qty, quantity)' });
 
-        // Build map of quantities to add
+        // Part numbers must be exactly 8 digits
+        const PN_FORMAT = /^\d{8}$/;
+        let skipped = 0;
+
+        // Build map of quantities to add — only valid 8-digit part numbers with qty > 0
         const addMap = {};
         csvRows.forEach(row => {
             const pn  = (row[pnCol] || '').trim();
             const qty = parseInt(row[qtyCol], 10) || 0;
-            if (pn && qty > 0) addMap[pn] = (addMap[pn] || 0) + qty;
+            if (pn && !PN_FORMAT.test(pn)) { skipped++; return; }
+            if (PN_FORMAT.test(pn) && qty > 0) addMap[pn] = (addMap[pn] || 0) + qty;
         });
-        if (Object.keys(addMap).length === 0) return res.status(400).json({ error: 'No valid rows found in CSV' });
+        if (Object.keys(addMap).length === 0) return res.status(400).json({ error: 'No valid rows found in CSV (part numbers must be 8 digits)' });
 
         // Read and update location inventory
         const locFile = path.join(LOCATIONS_DIR, `${safe}.csv`);
         const invText = await fsp.readFile(locFile, 'utf8');
         const { headers: invHeaders, rows: invRows } = parseCSV(invText);
+        const allHeaders = invHeaders.length ? invHeaders : ['part_number', 'quantity'];
 
         const ts = new Date().toISOString();
         const logLines = [];
-        let received = 0, skipped = 0;
+        let received = 0;
+        const newParts = [];
 
         Object.entries(addMap).forEach(([pn, qty]) => {
-            const rowIdx = invRows.findIndex(r => r.part_number === pn);
-            if (rowIdx === -1) { skipped++; return; }
+            // Gap 3: trim inventory-side part numbers before comparing
+            const rowIdx = invRows.findIndex(r => (r.part_number || '').trim() === pn);
+            if (rowIdx === -1) {
+                // New part — add as a new row in the location inventory
+                const newRow = {};
+                allHeaders.forEach(h => { newRow[h] = ''; });
+                newRow.part_number = pn;
+                newRow.quantity = qty;
+                invRows.push(newRow);
+                logLines.push(`\n${ts},${escapeCSVField(user.trim())},${escapeCSVField(safe)},${escapeCSVField(pn)},add,${qty},${qty}`);
+                newParts.push(pn);
+                received++;
+                return;
+            }
             const current = parseInt(invRows[rowIdx].quantity, 10) || 0;
             invRows[rowIdx].quantity = current + qty;
             logLines.push(`\n${ts},${escapeCSVField(user.trim())},${escapeCSVField(safe)},${escapeCSVField(pn)},add,${qty},${current + qty}`);
             received++;
         });
 
-        const allHeaders = invHeaders.length ? invHeaders : ['part_number', 'quantity'];
         await fsp.writeFile(locFile, rowsToCSV(allHeaders, invRows), 'utf8');
 
         if (logLines.length > 0) {
-            await ensureTransactionsFile();
-            await fsp.appendFile(TRANSACTIONS_FILE, logLines.join(''), 'utf8');
+            await appendTransaction(safe, logLines.join(''));
         }
 
-        // Decrement on-order quantities for received parts
+        // Add new parts to master parts.csv
+        if (newParts.length > 0) {
+            try {
+                const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
+                const { headers: partsHeaders, rows: partsRows } = parseCSV(partsText);
+                const partsPnCol = partsHeaders.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || partsHeaders[0];
+                const existingPns = new Set(partsRows.map(r => (r[partsPnCol] || '').trim()));
+                newParts.forEach(pn => {
+                    if (!existingPns.has(pn)) {
+                        const newRow = {};
+                        partsHeaders.forEach(h => { newRow[h] = ''; });
+                        newRow[partsPnCol] = pn;
+                        partsRows.push(newRow);
+                    }
+                });
+                await fsp.writeFile(PARTS_FILE, rowsToCSV(partsHeaders, partsRows), 'utf8');
+            } catch { /* parts file not available — non-fatal */ }
+        }
+
+        // Decrement on-order quantities for received parts (per-location)
         if (received > 0) {
             try {
-                await ensureOrdersFile();
-                const ordersText = await fsp.readFile(ORDERS_FILE, 'utf8');
-                const { rows: orderRows } = parseCSV(ordersText);
-                const orderMap = {};
-                orderRows.forEach(r => { orderMap[r.part_number] = parseInt(r.quantity_on_order, 10) || 0; });
+                const ordersFile = ordersFileForLocation(safe);
+                await ensureOrdersFile(ordersFile);
+                const ordersText = await fsp.readFile(ordersFile, 'utf8');
+                const orderMap = parseOrdersCSV(ordersText);
                 Object.entries(addMap).forEach(([pn, qty]) => {
                     if (orderMap[pn] > 0) orderMap[pn] = Math.max(0, orderMap[pn] - qty);
                 });
-                const newOrderRows = Object.entries(orderMap)
-                    .filter(([, q]) => q > 0)
-                    .map(([p, q]) => ({ part_number: p, quantity_on_order: q }));
-                await fsp.writeFile(ORDERS_FILE, rowsToCSV(['part_number', 'quantity_on_order'], newOrderRows), 'utf8');
+                await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
             } catch { /* orders file not available */ }
         }
 
-        res.json({ received, skipped });
+        res.json({ received, skipped, newToMaster: newParts.length });
     } catch (err) {
         if (err.code === 'ENOENT') return res.status(404).json({ error: 'Location not found' });
         res.status(500).json({ error: err.message });
@@ -633,20 +790,18 @@ app.post('/api/inventory/:location/bulk-receive', async (req, res) => {
 app.put('/api/orders/:partNumber', async (req, res) => {
     try {
         const pn  = req.params.partNumber;
-        const qty = parseInt(req.body.quantity_on_order, 10);
+        const { quantity_on_order, location } = req.body;
+        const qty = parseInt(quantity_on_order, 10);
         if (isNaN(qty) || qty < 0) return res.status(400).json({ error: 'quantity_on_order must be >= 0' });
+        const safeLoc = (location || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+        if (!safeLoc) return res.status(400).json({ error: 'location required' });
 
-        await ensureOrdersFile();
-        const text = await fsp.readFile(ORDERS_FILE, 'utf8');
-        const { rows } = parseCSV(text);
-        const orderMap = {};
-        rows.forEach(r => { orderMap[r.part_number] = parseInt(r.quantity_on_order, 10) || 0; });
+        const ordersFile = ordersFileForLocation(safeLoc);
+        await ensureOrdersFile(ordersFile);
+        const text = await fsp.readFile(ordersFile, 'utf8');
+        const orderMap = parseOrdersCSV(text);
         orderMap[pn] = qty;
-
-        const newRows = Object.entries(orderMap)
-            .filter(([, q]) => q > 0)
-            .map(([p, q]) => ({ part_number: p, quantity_on_order: q }));
-        await fsp.writeFile(ORDERS_FILE, rowsToCSV(['part_number', 'quantity_on_order'], newRows), 'utf8');
+        await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
         res.json({ part_number: pn, quantity_on_order: qty });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -663,11 +818,10 @@ app.post('/api/orders/:partNumber/receive', async (req, res) => {
 
         const safe = location.replace(/[^a-zA-Z0-9_\-]/g, '');
 
-        await ensureOrdersFile();
-        const ordersText = await fsp.readFile(ORDERS_FILE, 'utf8');
-        const { rows: orderRows } = parseCSV(ordersText);
-        const orderMap = {};
-        orderRows.forEach(r => { orderMap[r.part_number] = parseInt(r.quantity_on_order, 10) || 0; });
+        const ordersFile = ordersFileForLocation(safe);
+        await ensureOrdersFile(ordersFile);
+        const ordersText = await fsp.readFile(ordersFile, 'utf8');
+        const orderMap = parseOrdersCSV(ordersText);
 
         const onOrderQty = orderMap[pn] || 0;
         if (onOrderQty === 0) return res.status(400).json({ error: 'No quantity on order for this part' });
@@ -684,17 +838,12 @@ app.post('/api/orders/:partNumber/receive', async (req, res) => {
         rows[rowIdx].quantity = newQty;
         await fsp.writeFile(locFile, rowsToCSV(headers.length ? headers : ['part_number', 'quantity'], rows), 'utf8');
 
-        orderMap[pn] = 0;
-        const newOrderRows = Object.entries(orderMap)
-            .filter(([, q]) => q > 0)
-            .map(([p, q]) => ({ part_number: p, quantity_on_order: q }));
-        await fsp.writeFile(ORDERS_FILE, rowsToCSV(['part_number', 'quantity_on_order'], newOrderRows), 'utf8');
+        delete orderMap[pn];
+        await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
 
-        await ensureTransactionsFile();
         const ts = new Date().toISOString();
-        await fsp.appendFile(TRANSACTIONS_FILE,
-            `\n${ts},${escapeCSVField(user.trim())},${escapeCSVField(safe)},${escapeCSVField(pn)},receive,${onOrderQty},${newQty}`,
-            'utf8');
+        await appendTransaction(safe,
+            `\n${ts},${escapeCSVField(user.trim())},${escapeCSVField(safe)},${escapeCSVField(pn)},receive,${onOrderQty},${newQty}`);
 
         res.json({ part_number: pn, quantity: newQty, quantity_on_order: 0, received: onOrderQty });
     } catch (err) {
@@ -722,7 +871,7 @@ app.get('/api/truck/:username', async (req, res) => {
             try {
                 const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
                 const { headers, rows } = parseCSV(partsText);
-                const pnCol = headers.find(h => /part.?num|part.?no|partno|\bpn\b/i.test(h)) || headers[0];
+                const pnCol = headers.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || headers[0];
                 rows.forEach(row => { const pn = row[pnCol] || ''; if (pn) csvContent += `${pn},0\n`; });
             } catch {}
             await fsp.writeFile(locFile, csvContent, 'utf8');
@@ -781,14 +930,11 @@ app.post('/api/transfer', async (req, res) => {
         await fsp.writeFile(fromFile, rowsToCSV(fromHeaders.length ? fromHeaders : ['part_number', 'quantity'], fromRows), 'utf8');
         await fsp.writeFile(toFile,   rowsToCSV(toHeaders.length   ? toHeaders   : ['part_number', 'quantity'], toRows),   'utf8');
 
-        await ensureTransactionsFile();
         const ts = new Date().toISOString();
         const u  = escapeCSVField(user.trim());
         const pn = escapeCSVField(part_number);
-        await fsp.appendFile(TRANSACTIONS_FILE,
-            `\n${ts},${u},${escapeCSVField(safeFrom)},${pn},transfer-out,${qty},${newFromQty}` +
-            `\n${ts},${u},${escapeCSVField(safeTo)},${pn},transfer-in,${qty},${newToQty}`,
-            'utf8');
+        await appendTransaction(safeFrom, `\n${ts},${u},${escapeCSVField(safeFrom)},${pn},transfer-out,${qty},${newFromQty}`);
+        await appendTransaction(safeTo,   `\n${ts},${u},${escapeCSVField(safeTo)},${pn},transfer-in,${qty},${newToQty}`);
 
         res.json({
             part_number,
@@ -801,10 +947,69 @@ app.post('/api/transfer', async (req, res) => {
     }
 });
 
+// ─── API: City Groups ────────────────────────────────────────────────────────
+
+app.get('/api/city-groups', async (req, res) => {
+    try {
+        const text = await fsp.readFile(CITY_GROUPS_FILE, 'utf8');
+        res.json(JSON.parse(text));
+    } catch (err) {
+        if (err.code === 'ENOENT') return res.json({});
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/city-groups', async (req, res) => {
+    try {
+        const groups = req.body;
+        if (typeof groups !== 'object' || Array.isArray(groups) || groups === null) {
+            return res.status(400).json({ error: 'Expected a JSON object' });
+        }
+        for (const [city, locs] of Object.entries(groups)) {
+            if (typeof city !== 'string' || !Array.isArray(locs) || !locs.every(l => typeof l === 'string')) {
+                return res.status(400).json({ error: 'Invalid format: values must be arrays of strings' });
+            }
+        }
+        await fsp.writeFile(CITY_GROUPS_FILE, JSON.stringify(groups, null, 2), 'utf8');
+        res.json(groups);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // ─── Start ────────────────────────────────────────────────────────────────────
+
+// Migrate existing transactions.csv into per-location files on startup
+async function migrateTransactionsToPerLocation() {
+    try {
+        const text = await fsp.readFile(TRANSACTIONS_FILE, 'utf8');
+        const { rows } = parseCSV(text);
+        if (rows.length === 0) return;
+        const byLocation = {};
+        rows.forEach(row => {
+            const loc = (row.location || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+            if (!loc) return;
+            if (!byLocation[loc]) byLocation[loc] = [];
+            byLocation[loc].push(row);
+        });
+        await fsp.mkdir(TRANSACTIONS_DIR, { recursive: true });
+        const headers = ['timestamp', 'user', 'location', 'part_number', 'action', 'quantity', 'balance_after'];
+        let created = 0;
+        for (const [loc, locRows] of Object.entries(byLocation)) {
+            const file = txFileForLocation(loc);
+            try { await fsp.access(file); continue; } catch { /* file doesn't exist yet */ }
+            await fsp.writeFile(file, rowsToCSV(headers, locRows), 'utf8');
+            created++;
+        }
+        if (created > 0) console.log(`[InTracker] Migrated transactions into ${created} per-location file(s)`);
+    } catch (err) {
+        if (err.code !== 'ENOENT') console.error('[InTracker] Transaction migration error:', err.message);
+    }
+}
 
 runDailyBackup();
 setInterval(runDailyBackup, 60 * 60 * 1000); // re-check every hour
+migrateTransactionsToPerLocation();
 
 app.listen(PORT, () => {
     const env = process.env.DATA_DIR ? 'DEVELOPMENT' : 'PRODUCTION';

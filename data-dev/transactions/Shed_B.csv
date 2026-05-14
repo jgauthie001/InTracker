@@ -1,0 +1,11 @@
+timestamp,user,location,part_number,action,quantity,balance_after
+2026-04-07T20:45:17.549Z,Joseph Gauthier,Shed_B,92581012,transfer-in,1,1
+2026-04-07T20:45:18.799Z,Joseph Gauthier,Shed_B,92581012,transfer-in,1,2
+2026-04-07T20:45:21.713Z,Joseph Gauthier,Shed_B,92581012,transfer-out,1,1
+2026-04-07T20:45:22.804Z,Joseph Gauthier,Shed_B,92581012,transfer-out,1,0
+2026-04-07T20:45:28.824Z,Joseph Gauthier,Shed_B,92581012,transfer-in,1,1
+2026-04-07T20:45:30.049Z,Joseph Gauthier,Shed_B,92581012,transfer-in,1,2
+2026-04-07T20:45:30.993Z,Joseph Gauthier,Shed_B,92581012,transfer-in,1,3
+2026-04-07T20:45:32.531Z,Joseph Gauthier,Shed_B,92291203,transfer-in,1,1
+2026-04-07T20:45:32.729Z,Joseph Gauthier,Shed_B,92291203,transfer-in,1,2
+2026-04-07T20:45:33.179Z,Joseph Gauthier,Shed_B,92291203,transfer-in,1,3
