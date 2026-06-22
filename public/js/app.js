@@ -83,6 +83,7 @@ const btnRenamePasswordCancel   = $('btn-rename-password-cancel');
 const modalAdminChoice      = $('modal-admin-choice');
 const btnAdminRename        = $('btn-admin-rename');
 const btnAdminNewLocation   = $('btn-admin-new-location');
+const btnAdminLocationInfo  = $('btn-admin-location-info');
 const btnAdminManageHidden  = $('btn-admin-manage-hidden');
 const btnAdminCancel        = $('btn-admin-cancel');
 const btnAdminCityGroups    = $('btn-admin-city-groups');
@@ -133,6 +134,27 @@ const locInfoState       = $('loc-info-state');
 const locInfoZip         = $('loc-info-zip');
 const btnLocInfoSave     = $('btn-loc-info-save');
 const btnLocInfoCancel   = $('btn-loc-info-cancel');
+
+// Upload history modal
+const btnUploadHistory       = $('btn-upload-history');
+const modalUploadHistory     = $('modal-upload-history');
+const uploadHistoryLocName   = $('upload-history-loc-name');
+const uploadHistoryList      = $('upload-history-list');
+const uploadHistoryEmpty     = $('upload-history-empty');
+const uploadHistoryError     = $('upload-history-error');
+const btnUploadHistoryClose  = $('btn-upload-history-close');
+
+// Barcode scanner modal
+const modalBarcode              = $('modal-barcode');
+const inputBarcodePn            = $('input-barcode-pn');
+const barcodeDisplay            = $('barcode-display');
+const barcodePnShow             = $('barcode-pn-show');
+const barcodeDesc               = $('barcode-desc');
+const barcodeQty                = $('barcode-qty');
+const barcodeError              = $('barcode-error');
+const btnBarcodeClose           = $('btn-barcode-close');
+const btnBarcodeModeAdd         = $('btn-barcode-mode-add');
+const btnBarcodeModeSub         = $('btn-barcode-mode-subtract');
 
 // Transaction log
 const txnList          = $('txn-list');
@@ -188,6 +210,8 @@ function applyUserState() {
         btnManageLocations.disabled = false;
         btnTransactions.disabled = false;
         btnTruckStock.disabled = false;
+
+        btnUploadHistory.disabled = false;
         if (!state.location) {
             splashText.textContent = 'Select a location to view inventory.';
         }
@@ -200,6 +224,8 @@ function applyUserState() {
         btnManageLocations.disabled = true;
         btnTransactions.disabled = true;
         btnTruckStock.disabled = true;
+
+        btnUploadHistory.disabled = true;
         if (state.isTruckMode) {
             state.isTruckMode = false;
             state.locInventory = [];
@@ -216,12 +242,17 @@ function applyUserState() {
     updateHeaderHeight();
 }
 
-inputUser.addEventListener('input', () => {
+function handleUserInput() {
     state.user = inputUser.value;
     localStorage.setItem('intracker_user', state.user);
     applyUserState();
     scheduleTruckDropdown();
-});
+}
+
+inputUser.addEventListener('input', handleUserInput);
+inputUser.addEventListener('change', handleUserInput);
+inputUser.addEventListener('keyup', handleUserInput);
+inputUser.addEventListener('blur', handleUserInput);
 
 // ─── Locations ────────────────────────────────────────────────────────────────
 // ─── Per-user hidden locations (localStorage) ────────────────────────────────
@@ -261,10 +292,24 @@ async function loadLocations() {
         selectLocation.innerHTML = '<option value="">— Select a Location —</option>';
         const userHidden = getUserHidden();
         const cityFilter = getCityFilter();
+        
+        // If city filter is set but references locations that don't exist, clear it
+        if (cityFilter && cityFilter.locations) {
+            const validLocations = cityFilter.locations.filter(loc => locations.includes(loc));
+            if (validLocations.length === 0 || cityFilter.locations.length === 0) {
+                clearCityFilter();
+                showToast('City filter cleared - no matching locations', 2000);
+            } else {
+                // Update the filter to only include valid locations
+                cityFilter.locations = validLocations;
+                setCityFilter(cityFilter.city, validLocations);
+            }
+        }
+        
         locations.sort().forEach(loc => {
             if (loc.startsWith('truck_')) return; // truck locations only appear in truck mode
             if (userHidden.includes(loc)) return;  // user-level hide
-            if (cityFilter && !cityFilter.locations.includes(loc)) return; // city filter
+            if (cityFilter && cityFilter.locations && !cityFilter.locations.includes(loc)) return; // city filter
             const opt = document.createElement('option');
             opt.value = loc;
             opt.textContent = loc.replace(/_/g, ' ');
@@ -328,7 +373,7 @@ function scheduleTruckDropdown() {
     }, 600);
 }
 
-selectLocation.addEventListener('change', () => {
+function handleLocationChange() {
     // Selecting from dropdown exits truck transfer mode
     if (state.isTruckMode) {
         state.isTruckMode = false;
@@ -343,7 +388,9 @@ selectLocation.addEventListener('change', () => {
         showView(viewSplash);
         splashText.textContent = 'Select a location to view inventory.';
     }
-});
+}
+
+selectLocation.addEventListener('change', handleLocationChange);
 
 // ─── New Location Modal ───────────────────────────────────────────────────────
 btnNewLocation.addEventListener('click', () => {
@@ -429,7 +476,7 @@ async function loadInventory() {
     showView(viewInventory);
     const locationToLoad = activeLocation();
     try {
-        const res = await fetch(`/api/inventory/${encodeURIComponent(locationToLoad)}`);
+        const res = await fetch(`/api/inventory/${encodeURIComponent(locationToLoad)}?t=${Date.now()}`);
         const data = await res.json();
         if (!res.ok) { showToast(data.error || 'Failed to load inventory'); showView(viewSplash); return; }
         state.inventory = data.inventory;
@@ -448,6 +495,7 @@ function applyOrderVisibility() {
     const hide = state.hideOrder || activeLocation().startsWith('truck_');
     viewInventory.classList.toggle('order-hidden', hide);
     btnExitPo.classList.toggle('hidden', state.hideOrder);
+    btnUploadHistory.classList.toggle('hidden', state.hideOrder);
     const poBar = document.getElementById('po-action-bar');
     if (poBar) poBar.classList.toggle('hidden', state.hideOrder || state.isTruckMode);
     const hdr = document.getElementById('parts-list-header');
@@ -491,15 +539,22 @@ function renderInventory(filter = '') {
     const term = filter.toLowerCase().trim();
 
     let filtered = state.inventory.filter(item => {
+        // Search: part_number, description, equipment, AND full_description
         const matchSearch = !term ||
             item.part_number.toLowerCase().includes(term) ||
             getDescription(item).toLowerCase().includes(term) ||
-            getEquipment(item).toLowerCase().includes(term);
+            getEquipment(item).toLowerCase().includes(term) ||
+            (item.full_description ? item.full_description.toLowerCase().includes(term) : false);
         const matchEquip = !state.equipFilter ||
             getEquipment(item) === state.equipFilter;
         const matchDict = !state.dictFilter ||
             getDescription(item).toLowerCase().includes(state.dictFilter.toLowerCase());
-        return matchSearch && matchEquip && matchDict;
+        // Filter: hide items where qty=0 AND par_level=0 AND on_order=0
+        const qty = item.quantity || 0;
+        const parLevel = getParLevel(item);
+        const onOrder = item.on_order || 0;
+        const shouldShow = qty > 0 || parLevel !== 0 || onOrder > 0;
+        return matchSearch && matchEquip && matchDict && shouldShow;
     });
 
     // Sort
@@ -528,24 +583,31 @@ function renderInventory(filter = '') {
     filtered.forEach(item => {
         const qty = item.quantity;
         const desc = getDescription(item);
-        const equip = getEquipment(item);
         const parLevel = getParLevel(item);
         const onOrder = item.on_order || 0;
+        // Never mark as below-par if par_level is -1; only if par_level > 0 and qty < par_level
         const belowPar = !state.isTruckMode && parLevel > 0 && qty < parLevel;
-        const descLine = desc + (equip ? ` \u2022 ${equip}` : '');
+        const fullDescription = item.full_description || '';
+        // Use first line of Z10 description for short display, but only if it's meaningful (not just the part number)
+        const firstLine = fullDescription ? fullDescription.split('\n')[0].trim() : '';
+        const descLine = (firstLine && firstLine !== item.part_number) ? firstLine : desc;
         const disabled = !state.user ? 'disabled' : '';
         const qtyClass = qty === 0 ? 'zero' : '';
         const orderClass = onOrder > 0 ? ' has-order' : '';
-        const parDisplay = (!state.isTruckMode && parLevel > 0) ? parLevel : '&mdash;';
+        // Display par: -1 shows as "—", otherwise show the number (or — if 0 and not in truck mode)
+        const parDisplay = parLevel === -1 ? '&mdash;' : 
+                           (!state.isTruckMode && parLevel > 0) ? parLevel : '&mdash;';
         const poMode = !state.hideOrder && !state.isTruckMode;
         const parContent = poMode
-            ? `<input class="par-edit-input" type="number" value="${parLevel}" min="0" data-pn="${escapeAttr(item.part_number)}" aria-label="Par level for ${escapeAttr(item.part_number)}">`
+            ? `<input class="par-edit-input" type="number" value="${parLevel}" min="-1" data-pn="${escapeAttr(item.part_number)}" aria-label="Par level for ${escapeAttr(item.part_number)}">`
             : `<span class="par-val">${parDisplay}</span>`;
         const orderContent = poMode
             ? `<input class="order-edit-input" type="number" value="${onOrder}" min="0" data-pn="${escapeAttr(item.part_number)}" aria-label="On order for ${escapeAttr(item.part_number)}">`
             : (onOrder > 0 ? onOrder : '&mdash;');
         const card = document.createElement('div');
         card.className = `part-card${belowPar ? ' below-par' : ''}`;
+        card.dataset.pn = escapeAttr(item.part_number);
+        card.dataset.expanded = 'false';
         card.innerHTML = `
             <span class="part-pn">${escapeHtml(item.part_number)}</span>
             <span class="part-desc">${escapeHtml(descLine)}</span>
@@ -560,7 +622,8 @@ function renderInventory(filter = '') {
                 <input class="part-qty-input ${qtyClass}" type="number" value="${qty}" min="0" data-pn="${escapeAttr(item.part_number)}" ${disabled} aria-label="Quantity for ${escapeAttr(item.part_number)}">
                 <button class="btn-adj btn-add" data-pn="${escapeAttr(item.part_number)}" data-action="add" ${disabled} title="Add">&#43;</button>
             </div>
-            `;
+            ${fullDescription ? `<div class="part-full-description hidden">${escapeHtml(fullDescription)}</div>` : ''}
+        `;
         frag.appendChild(card);
     });
     partsList.appendChild(frag);
@@ -573,7 +636,7 @@ async function handleParChange(input) {
     if (!item) return;
     const currentPar = getParLevel(item);
     const newPar = parseInt(input.value, 10);
-    if (isNaN(newPar) || newPar < 0) { input.value = currentPar; return; }
+    if (isNaN(newPar) || newPar < -1) { input.value = currentPar; return; }
     if (newPar === currentPar) return;
     input.disabled = true;
     try {
@@ -586,9 +649,14 @@ async function handleParChange(input) {
         if (!res.ok) { showToast(data.error || 'Error saving par level', 3000); input.value = currentPar; input.disabled = false; return; }
         const parKey = Object.keys(item).find(k => /par_level|parlevel/i.test(k));
         if (parKey) item[parKey] = String(newPar);
-        else item.par_level = String(newPar); // orphan part: add key for re-render
+        else item.par_level = String(newPar);
+        // Update card display: update below-par styling, don't re-filter entire list
+        const card = input.closest('.part-card');
+        if (card) {
+            const qty = item.quantity || 0;
+            card.classList.toggle('below-par', !state.isTruckMode && newPar > 0 && qty < newPar);
+        }
         showToast(`Par ${pn} \u2192 ${newPar}`);
-        renderInventory(inputSearch.value);
     } catch {
         showToast('Server error. Please try again.', 3000);
         input.value = currentPar;
@@ -616,8 +684,23 @@ async function handleOrderChange(input) {
         const data = await res.json();
         if (!res.ok) { showToast(data.error || 'Error saving on-order quantity', 3000); input.value = currentOnOrder; input.disabled = false; return; }
         item.on_order = newOnOrder;
+        // Update card display: update on_order display, don't re-filter entire list
+        const card = input.closest('.part-card');
+        if (card) {
+            const orderSpan = card.querySelector(`.part-order[data-pn="${escapeAttr(pn)}"]`);
+            if (orderSpan) {
+                const disabled = !state.user ? 'disabled' : '';
+                const poMode = !state.hideOrder && !state.isTruckMode;
+                const orderDisplay = poMode
+                    ? `<input class="order-edit-input" type="number" value="${newOnOrder}" min="0" data-pn="${escapeAttr(pn)}" aria-label="On order for ${escapeAttr(pn)}">`
+                    : (newOnOrder > 0 ? newOnOrder : '&mdash;');
+                orderSpan.className = `part-order${newOnOrder > 0 ? ' has-order' : ''}`;
+                orderSpan.innerHTML = `<span class="order-label">On Ord</span>
+                    ${orderDisplay}
+                    ${newOnOrder > 0 ? `<button class="btn-receive" data-pn="${escapeAttr(pn)}" ${disabled} title="Receive ${newOnOrder} unit(s) into current location">&#10003; Rcv</button>` : ''}`;
+            }
+        }
         showToast(`On Ord ${pn} \u2192 ${newOnOrder}`);
-        renderInventory(inputSearch.value);
     } catch {
         showToast('Server error. Please try again.', 3000);
         input.value = currentOnOrder;
@@ -682,6 +765,22 @@ async function sendAdjust(part_number, action, quantity) {
 }
 
 partsList.addEventListener('click', async e => {
+    // Expand/collapse full_description pane when clicking on part number or description
+    const titleElement = e.target.closest('.part-pn, .part-desc');
+    if (titleElement) {
+        const card = titleElement.closest('.part-card');
+        if (card) {
+            const fullDescDiv = card.querySelector('.part-full-description');
+            if (fullDescDiv) {
+                e.preventDefault();
+                const isExpanded = card.dataset.expanded === 'true';
+                card.dataset.expanded = isExpanded ? 'false' : 'true';
+                fullDescDiv.classList.toggle('hidden');
+            }
+            return;
+        }
+    }
+
     // Receive button
     const rcvBtn = e.target.closest('.btn-receive');
     if (rcvBtn) { await handleReceive(rcvBtn.dataset.pn, rcvBtn); return; }
@@ -852,82 +951,13 @@ btnReorderGenerate.addEventListener('click', async () => {
     btnReorderGenerate.textContent = 'Generating…';
 
     try {
-        const fmt = document.querySelector('input[name="reorder-format"]:checked')?.value || 'batch';
-        if (fmt === 'ess') {
-            await generateEssReorderCsv(checked);
-        } else {
-            await generateReorderCsv(checked);
-        }
+        // ES&S is now the only format option
+        await generateEssReorderCsv(checked);
     } finally {
         btnReorderGenerate.disabled = false;
         btnReorderGenerate.textContent = 'Generate CSV';
     }
 });
-
-async function generateReorderCsv(locNames) {
-    const date = new Date().toISOString().slice(0, 10);
-    const COLS = 12;
-    const empty = () => Array(COLS).fill('');
-    const headerRow = ['CC#', 'Deliver To', 'Location Name', 'Address', 'Street', 'City', 'State', 'Zip',
-                       'Date Submitted', '', 'part_number', 'quantity_required'];
-    const lines = [headerRow.map(csvEscape).join(',')];
-    let totalParts = 0;
-
-    for (const locName of locNames) {
-        let inventory;
-        try {
-            const res = await fetch(`/api/inventory/${encodeURIComponent(locName)}`);
-            const data = await res.json();
-            if (!res.ok) { showToast(`Skipping ${locName.replace(/_/g,' ')}: error`, 3000); continue; }
-            inventory = data.inventory;
-        } catch {
-            showToast(`Skipping ${locName.replace(/_/g,' ')}: network error`, 3000);
-            continue;
-        }
-
-        const belowPar = inventory.filter(item => {
-            const p = getParLevel(item);
-            const onOrder = item.on_order || 0;
-            return p > 0 && (item.quantity + onOrder) < p;
-        });
-        if (belowPar.length === 0) continue;
-
-        const info = getLocInfo(locName);
-        const locRow = empty();
-        locRow[0] = info.cc           || '';
-        locRow[1] = info.shed         || '';
-        locRow[2] = info.locationName || locName.replace(/_/g, ' ');
-        locRow[3] = info.address      || '';
-        locRow[4] = info.street       || '';
-        locRow[5] = info.city         || '';
-        locRow[6] = info.state        || '';
-        locRow[7] = info.zip          || '';
-        locRow[8] = date;
-        lines.push(locRow.map(csvEscape).join(','));
-
-        belowPar.forEach(item => {
-            const onOrder = item.on_order || 0;
-            const needed = getParLevel(item) - item.quantity - onOrder;
-            const partRow = empty();
-            partRow[10] = item.part_number;
-            partRow[11] = String(needed);
-            lines.push(partRow.map(csvEscape).join(','));
-            totalParts++;
-        });
-    }
-
-    if (lines.length === 1) { showToast('No parts below par in selected locations', 3000); return; }
-
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `reorder_${date}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    modalReorderSelect.classList.add('hidden');
-    showToast(`Reorder CSV downloaded (${totalParts} part${totalParts === 1 ? '' : 's'} across ${locNames.length} location${locNames.length === 1 ? '' : 's'})`);
-}
 
 async function generateEssReorderCsv(locNames) {
     const date = new Date().toISOString().slice(0, 10);
@@ -1007,7 +1037,14 @@ inputOrdersCsv.addEventListener('change', () => {
     if (!file) return;
     inputOrdersCsv.value = '';
 
+    // Validate file extension
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+        showToast(`Wrong file type: "${file.name}". Please upload a CSV file.`, 4000);
+        return;
+    }
+
     const reader = new FileReader();
+    const filename = file.name;
     reader.onload = async (e) => {
         const csv = e.target.result;
         const loc = activeLocation();
@@ -1016,7 +1053,7 @@ inputOrdersCsv.addEventListener('change', () => {
             const res = await fetch('/api/orders/upload', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ csv, location: loc })
+                body: JSON.stringify({ csv, location: loc, filename })
             });
             const data = await res.json();
             if (!res.ok) { showToast(data.error || 'Upload failed', 3000); return; }
@@ -1041,7 +1078,14 @@ inputRecPartsCsv.addEventListener('change', () => {
     if (!file) return;
     inputRecPartsCsv.value = '';
 
+    // Validate file extension
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+        showToast(`Wrong file type: "${file.name}". Please upload a CSV file.`, 4000);
+        return;
+    }
+
     const reader = new FileReader();
+    const filename = file.name;
     reader.onload = async (e) => {
         const csv = e.target.result;
         const loc = activeLocation();
@@ -1050,7 +1094,7 @@ inputRecPartsCsv.addEventListener('change', () => {
             const res = await fetch(`/api/inventory/${encodeURIComponent(loc)}/bulk-receive`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ csv, user: state.user })
+                body: JSON.stringify({ csv, user: state.user, filename })
             });
             const data = await res.json();
             if (!res.ok) { showToast(data.error || 'Receive failed', 3000); return; }
@@ -1066,6 +1110,207 @@ inputRecPartsCsv.addEventListener('change', () => {
     reader.readAsText(file);
     });
 }
+
+// ─── Barcode Scanner ──────────────────────────────────────────────────────────
+let currentBarcodeItem = null;
+let barcodeModeIsAdd = true;  // true = ADD, false = SUBTRACT
+let barcodeInputBuffer = '';
+let barcodeInputLastTime = 0;
+
+// Global barcode scanner detector - opens modal when barcode is scanned anywhere
+document.addEventListener('keydown', (e) => {
+    // Don't intercept if inside a textarea or contenteditable, or if modal already open
+    const target = e.target;
+    if (target.tagName === 'TEXTAREA' || target.contentEditable === 'true') return;
+    if (target === inputBarcodePn) return;  // Let input field handle it normally
+    if (!modalBarcode.classList.contains('hidden')) return;  // Modal already open
+    if (!state.user.trim() || !state.location) return;  // User/location required
+    
+    // Detect barcode scanner pattern: rapid keystrokes followed by Enter
+    const now = Date.now();
+    const timeSinceLastKey = now - barcodeInputLastTime;
+    
+    if (e.key === 'Enter') {
+        // Enter key - check if we have a barcode buffer
+        if (barcodeInputBuffer.length >= 5) {  // Minimum barcode length
+            e.preventDefault();
+            // Auto-open modal with detected barcode
+            openBarcodeModal();
+            barcodeInputBuffer = '';
+        }
+        barcodeInputBuffer = '';
+        barcodeInputLastTime = 0;
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        // Regular character - accumulate if timing suggests barcode scanner
+        // Barcode scanners typically send characters within 50-100ms of each other
+        if (timeSinceLastKey < 150 || barcodeInputBuffer === '') {
+            barcodeInputBuffer += e.key;
+            barcodeInputLastTime = now;
+            e.preventDefault();  // Prevent default behavior
+        }
+    } else {
+        // Reset buffer on non-printable keys
+        barcodeInputBuffer = '';
+        barcodeInputLastTime = 0;
+    }
+}, true);  // Use capture phase to intercept before other handlers
+
+// Helper function to open barcode modal
+function openBarcodeModal() {
+    if (!state.user.trim()) { showToast('Please enter your name first'); return; }
+    if (!state.location) { showToast('Please select a location first'); return; }
+    
+    currentBarcodeItem = null;
+    barcodeModeIsAdd = true;  // Default to ADD mode
+    inputBarcodePn.value = '';
+    barcodeDisplay.classList.add('hidden');
+    barcodeError.classList.add('hidden');
+    barcodeError.textContent = '';
+    updateBarcodeModeDisplay();
+    modalBarcode.classList.remove('hidden');
+    inputBarcodePn.focus();
+}
+
+// Update barcode mode display
+function updateBarcodeModeDisplay() {
+    if (barcodeModeIsAdd) {
+        btnBarcodeModeAdd.classList.add('active');
+        btnBarcodeModeSub.classList.remove('active');
+    } else {
+        btnBarcodeModeAdd.classList.remove('active');
+        btnBarcodeModeSub.classList.add('active');
+    }
+}
+
+// Barcode mode selection
+btnBarcodeModeAdd.addEventListener('click', () => {
+    barcodeModeIsAdd = true;
+    updateBarcodeModeDisplay();
+    inputBarcodePn.focus();
+});
+
+btnBarcodeModeSub.addEventListener('click', () => {
+    barcodeModeIsAdd = false;
+    updateBarcodeModeDisplay();
+    inputBarcodePn.focus();
+});
+
+// Handle barcode scanning or manual entry
+inputBarcodePn.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter') {
+        const pn = inputBarcodePn.value.trim().toUpperCase();
+        if (!pn) {
+            barcodeError.textContent = 'Please enter a part number';
+            barcodeError.classList.remove('hidden');
+            return;
+        }
+        
+        // Find the part in current inventory
+        const item = state.inventory.find(i => i.part_number.toUpperCase() === pn);
+        if (!item) {
+            barcodeError.textContent = `❌ Part # "${pn}" not found in this location`;
+            barcodeError.classList.remove('hidden');
+            barcodeDisplay.classList.add('hidden');
+            showToast(`Part not found: ${pn}`, 3000);
+            inputBarcodePn.value = '';
+            inputBarcodePn.focus();
+            return;
+        }
+        
+        currentBarcodeItem = item;
+        barcodePnShow.textContent = item.part_number;
+        barcodeDesc.textContent = getDescription(item) || '(No description)';
+        barcodeQty.textContent = item.quantity;
+        barcodeError.classList.add('hidden');
+        barcodeError.textContent = '';
+        barcodeDisplay.classList.remove('hidden');
+        showToast(`✓ ${item.part_number} found – Current qty: ${item.quantity}`);
+        
+        // Auto-apply the selected mode
+        if (barcodeModeIsAdd) {
+            await performBarcodAdd(item, 1);
+        } else {
+            await performBarcodeSubtract(item, 1);
+        }
+    }
+});
+
+// Perform barcode add
+async function performBarcodAdd(item, qty) {
+    if (!item || !state.user.trim()) return;
+    
+    try {
+        const { ok, data } = await sendAdjust(item.part_number, 'add', qty);
+        if (!ok) {
+            barcodeError.textContent = `❌ ${data.error || 'Error adding quantity'}`;
+            barcodeError.classList.remove('hidden');
+            showToast(`Error: ${data.error || 'Failed to add quantity'}`, 3000);
+            return;
+        }
+        
+        currentBarcodeItem.quantity = data.quantity;
+        barcodeQty.textContent = data.quantity;
+        barcodeError.classList.add('hidden');
+        barcodeError.textContent = '';
+        showToast(`✓ +${qty} ${item.part_number} → ${data.quantity}`, 2500);
+        inputBarcodePn.value = '';
+        inputBarcodePn.focus();
+        barcodeDisplay.classList.add('hidden');
+        
+        // Update main inventory display
+        updateCardDisplay(item.part_number, data.quantity, data.on_order);
+    } catch (err) {
+        console.error('Add adjustment error:', err);
+        barcodeError.textContent = '❌ Server error. Please try again.';
+        barcodeError.classList.remove('hidden');
+        showToast('Server error', 3000);
+    }
+}
+
+// Perform barcode subtract
+async function performBarcodeSubtract(item, qty) {
+    if (!item || !state.user.trim()) return;
+    
+    if (item.quantity < qty) {
+        barcodeError.textContent = `❌ Cannot subtract ${qty} – only ${item.quantity} in stock`;
+        barcodeError.classList.remove('hidden');
+        showToast(`Insufficient stock: only ${item.quantity} available`, 3000);
+        return;
+    }
+    
+    try {
+        const { ok, data } = await sendAdjust(item.part_number, 'subtract', qty);
+        if (!ok) {
+            barcodeError.textContent = `❌ ${data.error || 'Error subtracting quantity'}`;
+            barcodeError.classList.remove('hidden');
+            showToast(`Error: ${data.error || 'Failed to subtract quantity'}`, 3000);
+            return;
+        }
+        
+        currentBarcodeItem.quantity = data.quantity;
+        barcodeQty.textContent = data.quantity;
+        barcodeError.classList.add('hidden');
+        barcodeError.textContent = '';
+        showToast(`✓ -${qty} ${item.part_number} → ${data.quantity}`, 2500);
+        inputBarcodePn.value = '';
+        inputBarcodePn.focus();
+        barcodeDisplay.classList.add('hidden');
+        
+        // Update main inventory display
+        updateCardDisplay(item.part_number, data.quantity, data.on_order);
+    } catch (err) {
+        console.error('Subtract adjustment error:', err);
+        barcodeError.textContent = '❌ Server error. Please try again.';
+        barcodeError.classList.remove('hidden');
+        showToast('Server error', 3000);
+    }
+}
+
+// Close barcode scanner
+btnBarcodeClose.addEventListener('click', () => {
+    modalBarcode.classList.add('hidden');
+    currentBarcodeItem = null;
+});
 
 // ─── Truck Stock ──────────────────────────────────────────────────────────────
 btnTruckStock.addEventListener('click', async () => {
@@ -1431,6 +1676,7 @@ btnRenamePasswordConfirm.addEventListener('click', () => {
     renamePasswordError.classList.add('hidden');
     // Show Rename vs New Location choice
     btnAdminRename.classList.toggle('hidden', !state.location || state.isTruckMode);
+    btnAdminLocationInfo.classList.toggle('hidden', !state.location || state.isTruckMode);
     modalAdminChoice.classList.remove('hidden');
 });
 
@@ -1467,6 +1713,24 @@ btnAdminManageHidden.addEventListener('click', () => {
 btnAdminCityGroups.addEventListener('click', () => {
     modalAdminChoice.classList.add('hidden');
     openCityGroupsModal();
+});
+
+btnAdminLocationInfo.addEventListener('click', () => {
+    modalAdminChoice.classList.add('hidden');
+    const locName = state.location;
+    if (!locName) return;
+    const info = getLocInfo(locName);
+    locInfoLocName.textContent  = locName.replace(/_/g, ' ');
+    locInfoCc.value             = info.cc           || '';
+    locInfoShed.value           = info.shed         || '';
+    locInfoLocname.value        = info.locationName || locName.replace(/_/g, ' ');
+    locInfoAddress.value        = info.address      || '';
+    locInfoStreet.value         = info.street       || '';
+    locInfoCity.value           = info.city         || '';
+    locInfoState.value          = info.state        || '';
+    locInfoZip.value            = info.zip          || '';
+    modalLocInfo.classList.remove('hidden');
+    setTimeout(() => locInfoCc.focus(), 100);
 });
 
 btnManageHiddenRestore.addEventListener('click', async () => {
@@ -1543,24 +1807,19 @@ btnManageLocCancel.addEventListener('click', () => {
 });
 
 // ─── Location Info Modal ──────────────────────────────────────────────────────
-if (btnLocInfo && modalLocInfo) {
+// Location info now opens via btnAdminLocationInfo after password validation
+if (btnLocInfo) {
     btnLocInfo.addEventListener('click', () => {
-        const locName = state.location;
-        if (!locName) return;
-        const info = getLocInfo(locName);
-        locInfoLocName.textContent  = locName.replace(/_/g, ' ');
-        locInfoCc.value             = info.cc           || '';
-        locInfoShed.value           = info.shed         || '';
-        locInfoLocname.value        = info.locationName || locName.replace(/_/g, ' ');
-        locInfoAddress.value        = info.address      || '';
-        locInfoStreet.value         = info.street       || '';
-        locInfoCity.value           = info.city         || '';
-        locInfoState.value          = info.state        || '';
-        locInfoZip.value            = info.zip          || '';
-        modalLocInfo.classList.remove('hidden');
-        setTimeout(() => locInfoCc.focus(), 100);
+        if (!state.location || state.isTruckMode) return;
+        renamePasswordError.classList.add('hidden');
+        inputRenamePassword.value = '';
+        modalRenamePassword.classList.remove('hidden');
+        setTimeout(() => inputRenamePassword.focus(), 100);
     });
+}
 
+// Save/Cancel handlers always execute (not conditional on btnLocInfo existing)
+if (btnLocInfoSave && modalLocInfo) {
     btnLocInfoSave.addEventListener('click', () => {
         const locName = state.location;
         if (!locName) return;
@@ -1577,7 +1836,9 @@ if (btnLocInfo && modalLocInfo) {
         modalLocInfo.classList.add('hidden');
         showToast('Location info saved');
     });
+}
 
+if (btnLocInfoCancel && modalLocInfo) {
     btnLocInfoCancel.addEventListener('click', () => {
         modalLocInfo.classList.add('hidden');
     });
@@ -1769,6 +2030,132 @@ btnCityGroupsCancel.addEventListener('click', () => {
 modalCityGroups.addEventListener('click', e => {
     if (e.target === modalCityGroups) modalCityGroups.classList.add('hidden');
 });
+
+// ─── Upload History ──────────────────────────────────────────────────────────
+btnUploadHistory.addEventListener('click', async () => {
+    const loc = activeLocation();
+    if (!loc) { showToast('Select a location first'); return; }
+    uploadHistoryLocName.textContent = loc.replace(/_/g, ' ');
+    uploadHistoryEmpty.classList.add('hidden');
+    uploadHistoryError.classList.add('hidden');
+    uploadHistoryList.innerHTML = '<div style="text-align:center;padding:20px"><p>Loading...</p></div>';
+    modalUploadHistory.classList.remove('hidden');
+    
+    try {
+        const res = await fetch(`/api/upload-history/${encodeURIComponent(loc)}`);
+        const data = await res.json();
+        renderUploadHistory(data.uploads);
+    } catch (err) {
+        uploadHistoryError.textContent = 'Failed to load upload history';
+        uploadHistoryError.classList.remove('hidden');
+        uploadHistoryList.innerHTML = '';
+    }
+});
+
+btnUploadHistoryClose.addEventListener('click', () => {
+    modalUploadHistory.classList.add('hidden');
+});
+
+modalUploadHistory.addEventListener('click', e => {
+    if (e.target === modalUploadHistory) modalUploadHistory.classList.add('hidden');
+});
+
+function renderUploadHistory(uploads) {
+    if (uploads.length === 0) {
+        uploadHistoryList.innerHTML = '';
+        uploadHistoryEmpty.classList.remove('hidden');
+        return;
+    }
+    uploadHistoryList.innerHTML = '';
+    uploadHistoryEmpty.classList.add('hidden');
+    
+    const frag = document.createDocumentFragment();
+    uploads.forEach(upload => {
+        const d = document.createElement('div');
+        d.style.cssText = 'padding:12px;border:1px solid var(--border);border-radius:var(--radius);display:flex;justify-content:space-between;align-items:center;gap:10px';
+        d.setAttribute('data-upload-id', upload.uploadId);
+        
+        const ts = new Date(upload.timestamp);
+        const dateStr = ts.toLocaleDateString();
+        const timeStr = ts.toLocaleTimeString();
+        const filename = upload.filename || 'upload.csv';
+        
+        // Create type badge
+        const typeBadge = document.createElement('span');
+        typeBadge.style.cssText = `
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-right: 6px;
+            ${upload.uploadType === 'PO' ? 'background:#4f8ef7;color:#fff' : 'background:#27ae60;color:#fff'}
+        `;
+        typeBadge.textContent = upload.uploadType === 'PO' ? 'PO' : 'REC';
+        
+        const infoDiv = document.createElement('div');
+        infoDiv.style.cssText = 'flex:1;min-width:0';
+        const titleDiv = document.createElement('div');
+        titleDiv.style.cssText = 'font-size:0.9rem;font-weight:500;display:flex;align-items:center;gap:6px;word-break:break-word';
+        titleDiv.appendChild(typeBadge);
+        const filenameSpan = document.createElement('span');
+        filenameSpan.textContent = filename;
+        titleDiv.appendChild(filenameSpan);
+        
+        const subDiv = document.createElement('div');
+        subDiv.style.cssText = 'font-size:0.8rem;color:var(--text-dim);margin-top:4px';
+        subDiv.textContent = `${dateStr} ${timeStr}`;
+        
+        infoDiv.appendChild(titleDiv);
+        infoDiv.appendChild(subDiv);
+        
+        const reverseBtn = document.createElement('button');
+        reverseBtn.className = 'btn-secondary btn-sm';
+        reverseBtn.textContent = 'Reverse';
+        reverseBtn.style.cssText = 'white-space:nowrap;flex-shrink:0';
+        reverseBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (!confirm(`Reverse this ${upload.uploadType} upload from ${filename}? This will undo the changes.`)) return;
+            await reverseUpload(upload.uploadId, d);
+        });
+        
+        d.appendChild(infoDiv);
+        d.appendChild(reverseBtn);
+        frag.appendChild(d);
+    });
+    uploadHistoryList.appendChild(frag);
+}
+
+async function reverseUpload(uploadId, uploadElement) {
+    const loc = activeLocation();
+    try {
+        const res = await fetch(`/api/reverse-upload/${encodeURIComponent(loc)}/${encodeURIComponent(uploadId)}`, {
+            method: 'POST'
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            uploadHistoryError.textContent = data.error || 'Reverse failed';
+            uploadHistoryError.classList.remove('hidden');
+            return;
+        }
+        
+        // Remove from history UI
+        if (uploadElement && uploadElement.parentNode) {
+            uploadElement.remove();
+            // Check if list is now empty
+            if (uploadHistoryList.children.length === 0) {
+                uploadHistoryEmpty.classList.remove('hidden');
+                uploadHistoryList.innerHTML = '';
+            }
+        }
+        
+        showToast(`Reversed: ${data.reversed} part${data.reversed === 1 ? '' : 's'} ${data.type === 'PO' ? 'removed from orders' : 'removed from inventory'}`, 4000);
+        await loadInventory();
+    } catch (err) {
+        uploadHistoryError.textContent = 'Reverse failed — server error';
+        uploadHistoryError.classList.remove('hidden');
+    }
+}
 
 // ─── Rename via parts-list header click (only in PO Entry mode) ──────────────
 document.getElementById('parts-list-header').addEventListener('click', () => {

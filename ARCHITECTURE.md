@@ -391,6 +391,125 @@ The truck location does **not** appear in the main location dropdown by default.
 
 ---
 
+## Backup System
+
+InTracker performs automatic nightly backups of all operational data files.
+
+### Backup Schedule & Scope
+- **Frequency:** Every night at midnight UTC (scheduled on server startup)
+- **Location:** `data/backups/YYYY-MM-DD/` — one timestamped folder per day
+- **Files backed up:**
+  - `parts.csv` — master parts list
+  - `transactions.csv` — transaction log
+  - `locations/` subdirectory — all location inventory CSV files (excluding truck_ locations)
+  - `orders/` subdirectory — all PO/on-order CSV files (if orders dir exists)
+- **Files NOT backed up:**
+  - `truck_*.csv` files (personal inventory, not operational data)
+  - `data/hidden_locations.json`
+  - `data/city_groups.json`
+  - `data/upload-history/` (metadata only)
+
+### Backup Directory Structure
+The backup preserves the source directory structure to avoid file-naming collisions:
+
+```
+data/backups/2026-05-27/
+├── parts.csv                    (root-level backup)
+├── transactions.csv             (root-level backup)
+├── locations/                   (separate subdirectory)
+│   ├── Houston_-_Ferrini.csv    (location inventory snapshot)
+│   ├── Katy_-_Moreno.csv
+│   └── Pearland_-_Mullich.csv
+└── orders/                      (separate subdirectory)
+    ├── Houston_-_Ferrini.csv    (on-order quantities snapshot)
+    ├── Katy_-_Moreno.csv
+    └── Pearland_-_Mullich.csv
+```
+
+**Why subdirectories:** Location CSVs and order CSVs can have identical filenames (e.g., both `Houston_-_Ferrini.csv`). Without separation, one file would overwrite the other during backup. Subdirectories ensure all files are preserved correctly.
+
+### Idempotent Design
+The backup function checks if today's backup folder already exists before running. If it does, the backup is skipped. This prevents duplicate backups if the server restarts after midnight or if the backup process is manually triggered multiple times.
+
+### Restore Process
+To restore from a backup:
+1. Locate the desired backup folder: `data/backups/YYYY-MM-DD/`
+2. Stop the server
+3. Copy the backed-up files to their original locations:
+   - Root files: Copy `parts.csv` and `transactions.csv` to `data/`
+   - Location CSVs: Copy `locations/*` to `data/locations/`
+   - Order CSVs: Copy `orders/*` to `data/orders/`
+4. Restart the server
+
+Example with PowerShell:
+```powershell
+# Copy root files
+Copy-Item "data/backups/2026-05-25/parts.csv" "data/parts.csv" -Force
+Copy-Item "data/backups/2026-05-25/transactions.csv" "data/transactions.csv" -Force
+
+# Copy location inventory
+Copy-Item "data/backups/2026-05-25/locations/*" "data/locations/" -Force -Recurse
+
+# Copy on-order data (if restoring orders)
+Copy-Item "data/backups/2026-05-25/orders/*" "data/orders/" -Force -Recurse
+```
+
+---
+
+## On-Order Quantity System
+
+On-order quantities track purchased parts currently in transit or pending delivery. This management layer is separate from live stock.
+
+### Storage & Format
+- **File:** `data/orders.csv` (auto-created on first use)
+- **Schema:** `part_number, quantity_on_order`
+- **Sparsity:** Only parts with `quantity_on_order > 0` are stored. A missing part number means 0 is on order.
+- **Blank entries (0 qty):** Not written to file; they are implicitly removed
+
+### Upload PO (Additive Merge)
+When a PO CSV is uploaded via **Upload PO** button (in PO Entry mode):
+1. Server detects part number and quantity columns by regex patterns (`part.?num`, `qty`, etc.)
+2. Quantities are **additively merged** into `orders.csv` — uploading the same part twice across multiple uploads **accumulates** the totals
+3. Example: If part PN-001 has qty_on_order=10, uploading a PO with PN-001=5 results in qty_on_order=15
+4. Returns `{ merged: N, total: M }` where merged is parts processed and total is cumulative on-order sum
+
+### Auto-Decrement on Receipt
+When stock is received and added to a location inventory via `POST /api/inventory/:location/adjust` with `action: "add"`:
+1. Server checks if that part has an on-order entry in `orders.csv`
+2. If yes: decrements by the received amount (floored at 0, never goes negative)
+3. Updates `orders.csv` and returns the new on-order value in the response (`on_order` field)
+4. Frontend updates the On Order display live without a page reload
+5. **Example:** Ordered 10 units of PN-001. Receive 3 units. On-order auto-decrements to 7. Receive final 7 units. On-order goes to 0 and is removed from CSV.
+
+### Receiving All On-Order Qty
+Each part card with a non-zero On Order quantity displays an **Rcv** button. Tapping it calls `POST /api/orders/:partNumber/receive`:
+1. Adds the full on-order quantity to the location's current inventory
+2. Logs a `receive` transaction in `transactions.csv`
+3. Zeros the on-order entry (removes it from `orders.csv`)
+4. Returns `{ part_number, quantity: new_total, quantity_on_order: 0, received: amount_added }`
+5. Frontend updates card in place and removes the Rcv button
+
+### Bulk Receive CSV (`⬆ Rec Parts`)
+The **⬆ Rec Parts** button opens a CSV file picker for batch receiving. The uploaded CSV is sent to `POST /api/inventory/:location/bulk-receive`:
+1. Server detects part number and quantity columns by regex
+2. Reads location CSV once, applies all received parts in a single pass, writes once (performance)
+3. For each received part: logs an `add` transaction, decrements on-order by received amount (floored at 0)
+4. Returns `{ received: N, skipped: M }` where received=parts found and added, skipped=parts not in this location's CSV
+5. UI toasts the result: `"Received: 3 parts added"` or `"Received: 3 parts added, 2 not found"`
+
+### Display & User Interface
+- **On Order column:** Hidden by default; visible only in PO Entry mode (activated by clicking **InTracker** title)
+- **On Order value:** Shown as a number, colored amber if non-zero
+- **Rcv button:** Only appears when `quantity_on_order > 0`
+- **Always hidden on truck locations:** Even in PO Entry mode, the On Order column is not shown for truck_ locations (intentional—truck is personal stock, not tied to corporate PO workflow)
+
+### Par Level vs. On-Order
+- **Par level:** Desired stock quantity for normal operations (separate concept)
+- **On-order quantity:** Additional units in transit, not yet received
+- **Reorder logic:** Reorder CSV shows `quantity_needed = par_level − current_quantity` for all below-par parts. This is a user-facing suggestion; on-order quantities can be uploaded separately and managed independently.
+
+---
+
 ## Running the App
 
 Dev runs from `E:\intracker\`. Production runs from `E:\InTrackerDoNotTouch\`.

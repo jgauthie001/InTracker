@@ -10,7 +10,7 @@ const path = require('path');
 const cors = require('cors');
 
 const app = express();
-const PORT = process.env.PORT || 3030;
+const PORT = process.argv[2] || process.env.PORT || 3030;
 const DATA_DIR = process.env.DATA_DIR
     ? path.resolve(process.env.DATA_DIR)
     : path.join(__dirname, 'data');
@@ -25,14 +25,36 @@ const HIDDEN_FILE    = path.join(DATA_DIR, 'hidden_locations.json');
 const CITY_GROUPS_FILE = path.join(DATA_DIR, 'city_groups.json');
 const BACKUPS_DIR    = path.join(DATA_DIR, 'backups');
 const ORDERS_DIR     = path.join(DATA_DIR, 'orders');
-const PAR_LEVELS_FILE = path.join(DATA_DIR, 'par_levels.json');
+const UPLOAD_HISTORY_DIR = path.join(DATA_DIR, 'upload-history');
+const Z10_MASTER_FILE = path.join(__dirname, 'Z10 Master List.csv');
+
+// Z10 Master List cache (loaded on startup)
+let z10DescriptionMap = {};
+
+async function loadZ10Descriptions() {
+    try {
+        const text = await fsp.readFile(Z10_MASTER_FILE, 'utf8');
+        const { rows } = parseCSV(text);
+        z10DescriptionMap = {};
+        rows.forEach(row => {
+            if (row['Part No']) {
+                z10DescriptionMap[row['Part No'].trim()] = row['Z10 text'] || '';
+            }
+        });
+        const count = Object.keys(z10DescriptionMap).length;
+        console.log(`✅ Loaded ${count} Z10 descriptions from Z10 Master List`);
+        // Log first few entries for debugging
+        const sampleParts = Object.keys(z10DescriptionMap).slice(0, 3);
+        sampleParts.forEach(pn => {
+            const desc = z10DescriptionMap[pn].split('\n')[0];
+            console.log(`   ${pn}: ${desc.substring(0, 50)}...`);
+        });
+    } catch (err) {
+        console.warn(`❌ Could not load Z10 Master List: ${err.message}`);
+    }
+}
+
 function ordersFileForLocation(safe) { return path.join(ORDERS_DIR, `${safe}.csv`); }
-async function readParLevels() {
-    try { return JSON.parse(await fsp.readFile(PAR_LEVELS_FILE, 'utf8')); } catch { return {}; }
-}
-async function writeParLevels(data) {
-    await fsp.writeFile(PAR_LEVELS_FILE, JSON.stringify(data, null, 2), 'utf8');
-}
 
 app.use(cors());
 app.use(express.json());
@@ -57,13 +79,50 @@ app.use(express.static(STATIC_DIR));
 // ─── CSV Helpers ─────────────────────────────────────────────────────────────
 
 function parseCSV(text) {
-    const lines = text.trim().split(/\r?\n/);
+    const lines = [];
+    let current = '';
+    let inQuotes = false;
+    
+    // Parse entire text preserving quoted field boundaries
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        const nextCh = text[i + 1];
+        
+        if (ch === '"') {
+            if (inQuotes && nextCh === '"') {
+                // Escaped quote ""
+                current += '""';
+                i++;
+            } else {
+                // Toggle quote state
+                inQuotes = !inQuotes;
+                current += ch;
+            }
+        } else if ((ch === '\n' || ch === '\r') && !inQuotes) {
+            // End of line (not in quotes)
+            if (ch === '\r' && nextCh === '\n') i++; // Skip \r\n
+            if (current.trim()) lines.push(current);
+            current = '';
+        } else {
+            current += ch;
+        }
+    }
+    if (current.trim()) lines.push(current);
+    
     if (lines.length === 0) return { headers: [], rows: [] };
-    const headers = lines[0].split(',').map(h => h.trim());
+    
+    const headers = splitCSVLine(lines[0]).map(h => h.trim());
     const rows = lines.slice(1).map(line => {
         const values = splitCSVLine(line);
         const obj = {};
-        headers.forEach((h, i) => { obj[h] = (values[i] || '').trim(); });
+        headers.forEach((h, i) => {
+            let val = (values[i] || '').trim();
+            // Remove surrounding quotes and unescape "" to "
+            if (val.startsWith('"') && val.endsWith('"')) {
+                val = val.slice(1, -1).replace(/""/g, '"');
+            }
+            obj[h] = val;
+        });
         return obj;
     });
     return { headers, rows };
@@ -77,6 +136,7 @@ function splitCSVLine(line) {
         const ch = line[i];
         if (ch === '"') {
             inQuotes = !inQuotes;
+            current += ch;
         } else if (ch === ',' && !inQuotes) {
             result.push(current);
             current = '';
@@ -179,26 +239,229 @@ async function runDailyBackup() {
     const backupDir = path.join(BACKUPS_DIR, today);
     try { await fsp.access(backupDir); return; } catch { /* proceed */ }
     await fsp.mkdir(backupDir, { recursive: true });
-    const filesToBackup = [];
-    try { await fsp.access(PARTS_FILE);        filesToBackup.push(PARTS_FILE);        } catch {}
-    try { await fsp.access(TRANSACTIONS_FILE); filesToBackup.push(TRANSACTIONS_FILE); } catch {}
-    try { await fsp.access(PAR_LEVELS_FILE);   filesToBackup.push(PAR_LEVELS_FILE);   } catch {}
+    
+    // Backup root-level files
+    try { await fsp.access(PARTS_FILE);        await fsp.copyFile(PARTS_FILE, path.join(backupDir, path.basename(PARTS_FILE))); } catch {}
+    try { await fsp.access(TRANSACTIONS_FILE); await fsp.copyFile(TRANSACTIONS_FILE, path.join(backupDir, path.basename(TRANSACTIONS_FILE))); } catch {}
+    
+    // Backup location CSVs (preserve subdirectory structure)
     try {
-        const txFiles = await fsp.readdir(TRANSACTIONS_DIR);
-        txFiles.filter(f => f.endsWith('.csv')).forEach(f => filesToBackup.push(path.join(TRANSACTIONS_DIR, f)));
-    } catch {}
-    try {
+        const locBackupDir = path.join(backupDir, 'locations');
+        await fsp.mkdir(locBackupDir, { recursive: true });
         const locFiles = await fsp.readdir(LOCATIONS_DIR);
-        locFiles.filter(f => f.endsWith('.csv')).forEach(f => filesToBackup.push(path.join(LOCATIONS_DIR, f)));
+        for (const f of locFiles.filter(f => f.endsWith('.csv') && !f.toLowerCase().startsWith('truck_'))) {
+            try { await fsp.copyFile(path.join(LOCATIONS_DIR, f), path.join(locBackupDir, f)); } catch {}
+        }
     } catch {}
+    
+    // Backup order CSVs (preserve subdirectory structure)
     try {
+        const ordBackupDir = path.join(backupDir, 'orders');
+        await fsp.mkdir(ordBackupDir, { recursive: true });
         const ordFiles = await fsp.readdir(ORDERS_DIR);
-        ordFiles.filter(f => f.endsWith('.csv')).forEach(f => filesToBackup.push(path.join(ORDERS_DIR, f)));
+        for (const f of ordFiles.filter(f => f.endsWith('.csv'))) {
+            try { await fsp.copyFile(path.join(ORDERS_DIR, f), path.join(ordBackupDir, f)); } catch {}
+        }
     } catch {}
-    for (const file of filesToBackup) {
-        try { await fsp.copyFile(file, path.join(backupDir, path.basename(file))); } catch {}
-    }
+    
     console.log(`[InTracker] Backup completed: ${today}`);
+}
+
+// Schedule backup to run nightly at midnight
+function scheduleNightlyBackup() {
+    const now = new Date();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(0, 0, 0, 0);
+    
+    let timeUntilMidnight = tomorrow.getTime() - now.getTime();
+    
+    console.log(`[InTracker] Nightly backup scheduled for ${tomorrow.toISOString()}`);
+    
+    setTimeout(() => {
+        runDailyBackup();
+        // After first run, schedule it to repeat every 24 hours
+        setInterval(runDailyBackup, 24 * 60 * 60 * 1000);
+    }, timeUntilMidnight);
+}
+
+// ─── Upload History Management ───────────────────────────────────────────────
+
+async function saveUploadHistory(location, uploadType, uploadedCsv, uploadedFilename = 'upload.csv', beforeOrderState = null) {
+    // uploadedCsv: the CSV content that was uploaded
+    // beforeOrderState: map of part numbers to on-order quantities before this upload (for RecParts)
+    const safe = location.replace(/[^a-zA-Z0-9 _\-]/g, '').replace(/\s+/g, '_');
+    const historyDirForLocation = path.join(UPLOAD_HISTORY_DIR, safe);
+    await fsp.mkdir(historyDirForLocation, { recursive: true });
+    
+    const now = new Date();
+    const timestamp = now.toISOString().replace(/[:.]/g, '-');
+    const uploadId = `${uploadType}_${timestamp}`;
+    const uploadDirForId = path.join(historyDirForLocation, uploadId);
+    await fsp.mkdir(uploadDirForId, { recursive: true });
+    
+    // Save metadata with filename and date/time
+    const metadata = {
+        uploadId,
+        location: safe,
+        uploadType,
+        timestamp: now.toISOString(),
+        filename: uploadedFilename
+    };
+    
+    // For RecParts, also save the before-state of on-order quantities
+    if (uploadType === 'RecParts' && beforeOrderState) {
+        metadata.beforeOrderState = beforeOrderState;
+    }
+    
+    // Write metadata first
+    await fsp.writeFile(path.join(uploadDirForId, 'metadata.json'), JSON.stringify(metadata, null, 2), 'utf8');
+    
+    // Save the uploaded CSV with its original filename
+    const csvPath = path.join(uploadDirForId, uploadedFilename);
+    await fsp.writeFile(csvPath, uploadedCsv, 'utf8');
+    
+    // Verify the file was written
+    try {
+        await fsp.access(csvPath);
+    } catch {
+        throw new Error(`Failed to save upload CSV to ${csvPath}`);
+    }
+    
+    // Keep only last 10 uploads for this location
+    try {
+        const entries = await fsp.readdir(historyDirForLocation, { withFileTypes: true });
+        const dirs = entries
+            .filter(e => e.isDirectory())
+            .sort((a, b) => b.name.localeCompare(a.name)); // Sort by name (timestamp), newest first
+        
+        if (dirs.length > 10) {
+            // Delete oldest ones
+            for (let i = 10; i < dirs.length; i++) {
+                const dirPath = path.join(historyDirForLocation, dirs[i].name);
+                await fsp.rm(dirPath, { recursive: true, force: true });
+            }
+        }
+    } catch {}
+    
+    return uploadId;
+}
+
+async function getUploadHistory(location) {
+    const safe = location.replace(/[^a-zA-Z0-9 _\-]/g, '').replace(/\s+/g, '_');
+    const historyDirForLocation = path.join(UPLOAD_HISTORY_DIR, safe);
+    
+    try {
+        const entries = await fsp.readdir(historyDirForLocation, { withFileTypes: true });
+        const uploads = [];
+        
+        for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            try {
+                const metadataPath = path.join(historyDirForLocation, entry.name, 'metadata.json');
+                const metadata = JSON.parse(await fsp.readFile(metadataPath, 'utf8'));
+                uploads.push(metadata);
+            } catch {}
+        }
+        
+        // Sort by timestamp, newest first
+        uploads.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        return uploads;
+    } catch {
+        return [];
+    }
+}
+
+async function reverseUpload(location, uploadId) {
+    const safe = location.replace(/[^a-zA-Z0-9 _\-]/g, '').replace(/\s+/g, '_');
+    const uploadDirForId = path.join(UPLOAD_HISTORY_DIR, safe, uploadId);
+    
+    try {
+        const metadata = JSON.parse(await fsp.readFile(path.join(uploadDirForId, 'metadata.json'), 'utf8'));
+        
+        // Use filename from metadata, fallback to 'upload.csv' for backward compatibility
+        const filename = metadata.filename || 'upload.csv';
+        const uploadedCsvPath = path.join(uploadDirForId, filename);
+        const uploadedCsv = await fsp.readFile(uploadedCsvPath, 'utf8');
+        const { headers, rows } = parseCSV(uploadedCsv);
+        
+        const pnCol  = headers.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h));
+        const qtyCol = headers.find(h => /qty|quantity/i.test(h) && h !== pnCol);
+        
+        if (!pnCol || !qtyCol) {
+            return { success: false, error: 'Could not parse uploaded file' };
+        }
+        
+        const PN_FORMAT = /^\d{8}$/;
+        
+        if (metadata.uploadType === 'PO') {
+            // Reverse a PO upload: subtract quantities from orders.csv
+            const ordersFile = ordersFileForLocation(safe);
+            const ordersText = await fsp.readFile(ordersFile, 'utf8');
+            const orderMap = parseOrdersCSV(ordersText);
+            
+            let reversed = 0;
+            rows.forEach(row => {
+                const pn  = (row[pnCol] || '').trim();
+                const qty = parseInt(row[qtyCol], 10) || 0;
+                if (PN_FORMAT.test(pn) && qty > 0 && orderMap[pn]) {
+                    orderMap[pn] = Math.max(0, orderMap[pn] - qty);
+                    reversed++;
+                }
+            });
+            
+            await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
+            // Delete the upload folder after successful reversal
+            await fsp.rm(uploadDirForId, { recursive: true, force: true });
+            return { success: true, type: 'PO', reversed };
+            
+        } else if (metadata.uploadType === 'RecParts') {
+            // Reverse a RecParts upload: remove quantities from location inventory and restore on-order to before-state
+            const locFile = path.join(LOCATIONS_DIR, `${safe}.csv`);
+            const locText = await fsp.readFile(locFile, 'utf8');
+            const { headers: invHeaders, rows: invRows } = parseCSV(locText);
+            
+            const ordersFile = ordersFileForLocation(safe);
+            const ordersText = await fsp.readFile(ordersFile, 'utf8');
+            const orderMap = parseOrdersCSV(ordersText);
+            
+            let reversed = 0;
+            rows.forEach(row => {
+                const pn  = (row[pnCol] || '').trim();
+                const qty = parseInt(row[qtyCol], 10) || 0;
+                
+                if (PN_FORMAT.test(pn) && qty > 0) {
+                    // Remove from inventory
+                    const rowIdx = invRows.findIndex(r => (r.part_number || '').trim() === pn);
+                    if (rowIdx !== -1) {
+                        const current = parseInt(invRows[rowIdx].quantity, 10) || 0;
+                        invRows[rowIdx].quantity = Math.max(0, current - qty);
+                        // Restore on-order quantity to before-state (or delete if it wasn't there before)
+                        if (metadata.beforeOrderState && metadata.beforeOrderState[pn] !== undefined) {
+                            orderMap[pn] = metadata.beforeOrderState[pn];
+                        } else if (metadata.beforeOrderState) {
+                            // Part wasn't on order before, remove it now
+                            delete orderMap[pn];
+                        } else {
+                            // Fallback for old uploads without beforeOrderState: add qty back
+                            orderMap[pn] = (orderMap[pn] || 0) + qty;
+                        }
+                        reversed++;
+                    }
+                }
+            });
+            
+            await fsp.writeFile(locFile, rowsToCSV(invHeaders.length ? invHeaders : ['part_number', 'quantity'], invRows), 'utf8');
+            await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
+            // Delete the upload folder after successful reversal
+            await fsp.rm(uploadDirForId, { recursive: true, force: true });
+            return { success: true, type: 'RecParts', reversed };
+        } else {
+            return { success: false, error: 'Unknown upload type' };
+        }
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
 }
 
 // ─── API: Parts ───────────────────────────────────────────────────────────────
@@ -216,23 +479,48 @@ app.get('/api/parts', async (req, res) => {
 
 // PUT /api/parts/:partNumber/par_level — update par level (per-location or global)
 // Body: { par_level: number, location?: string }
-// If location is provided, writes to par_levels.json for that location only.
+// If location is provided, writes to location CSV's par_level column.
 // Otherwise writes the global default in parts.csv.
 app.put('/api/parts/:partNumber/par_level', async (req, res) => {
     try {
         const pn  = req.params.partNumber;
         const par = parseInt(req.body.par_level, 10);
-        if (isNaN(par) || par < 0) return res.status(400).json({ error: 'par_level must be >= 0' });
+        if (isNaN(par) || par < -1) return res.status(400).json({ error: 'par_level must be >= -1 (use -1 for zero par but visible)' });
 
         const locationRaw = req.body.location;
         if (locationRaw) {
-            // Per-location: write to par_levels.json
-            const safe = locationRaw.replace(/[^a-zA-Z0-9_\-]/g, '');
-            const all = await readParLevels();
-            if (!all[safe]) all[safe] = {};
-            all[safe][pn] = par;
-            await writeParLevels(all);
-            return res.json({ part_number: pn, par_level: par, location: safe });
+            // Per-location: write to location CSV par_level column
+            const safe = locationRaw.replace(/[^a-zA-Z0-9 _\-]/g, '').replace(/\s+/g, '_');
+            
+            // Block par_level changes for truck locations
+            if (safe.toLowerCase().startsWith('truck_')) {
+                return res.status(403).json({ error: 'Cannot set par levels for truck stocks' });
+            }
+            
+            const locFile = path.join(LOCATIONS_DIR, `${safe}.csv`);
+            try {
+                const locText = await fsp.readFile(locFile, 'utf8');
+                const { headers, rows } = parseCSV(locText);
+                
+                // Ensure par_level column exists
+                if (!headers.includes('par_level')) {
+                    headers.push('par_level');
+                }
+                
+                // Find and update the part row, or add it if missing
+                const idx = rows.findIndex(r => r.part_number === pn);
+                if (idx === -1) {
+                    // Part not yet in this location, add it
+                    rows.push({ part_number: pn, quantity: 0, par_level: par });
+                } else {
+                    rows[idx].par_level = par;
+                }
+                
+                await fsp.writeFile(locFile, rowsToCSV(headers, rows), 'utf8');
+                return res.json({ part_number: pn, par_level: par, location: safe });
+            } catch (err) {
+                return res.status(500).json({ error: `Failed to update location par level: ${err.message}` });
+            }
         }
 
         // Global default: write to parts.csv
@@ -371,8 +659,8 @@ app.post('/api/locations', async (req, res) => {
             return res.status(409).json({ error: 'Location already exists' });
         } catch { /* doesn't exist, proceed */ }
 
-        // Build the new location CSV pre-populated from parts.csv at qty 0
-        let csvContent = 'part_number,quantity\n';
+        // Build the new location CSV pre-populated from parts.csv at qty 0 and par_level 0
+        let csvContent = 'part_number,quantity,par_level\n';
         try {
             const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
             const { headers, rows } = parseCSV(partsText);
@@ -380,7 +668,7 @@ app.post('/api/locations', async (req, res) => {
             const pnCol = headers.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || headers[0];
             rows.forEach(row => {
                 const pn = row[pnCol] || '';
-                if (pn) csvContent += `${pn},0\n`;
+                if (pn) csvContent += `${pn},0,0\n`;
             });
         } catch { /* parts.csv missing — create empty location */ }
 
@@ -395,7 +683,7 @@ app.post('/api/locations', async (req, res) => {
 
 app.get('/api/inventory/:location', async (req, res) => {
     try {
-        const safe = req.params.location.replace(/[^a-zA-Z0-9_\-]/g, '');
+        const safe = req.params.location.replace(/[^a-zA-Z0-9 _\-]/g, '').replace(/\s+/g, '_');
         const locFile = path.join(LOCATIONS_DIR, `${safe}.csv`);
         const invText = await fsp.readFile(locFile, 'utf8');
         const { rows: invRows } = parseCSV(invText);
@@ -439,16 +727,40 @@ app.get('/api/inventory/:location', async (req, res) => {
 
         // Persist the updated location CSV if anything changed
         if (locationDirty && partsPnList.length > 0) {
+            // Read current location CSV to get its headers and any existing par_levels
+            let locHeaders = ['part_number', 'quantity', 'par_level'];
+            const locParMap = {};
+            try {
+                const currentLocText = await fsp.readFile(locFile, 'utf8');
+                const { headers: curHeaders, rows: curRows } = parseCSV(currentLocText);
+                locHeaders = curHeaders;
+                if (!locHeaders.includes('par_level')) {
+                    locHeaders.push('par_level');
+                }
+                // Preserve existing par_levels
+                curRows.forEach(row => {
+                    locParMap[row.part_number] = row.par_level || '0';
+                });
+            } catch { /* file might not exist yet */ }
+            
             const updatedRows = partsPnList
                 .filter(pn => pn in qtyMap)
-                .map(pn => ({ part_number: pn, quantity: qtyMap[pn] }));
+                .map(pn => ({
+                    part_number: pn,
+                    quantity: qtyMap[pn],
+                    par_level: locParMap[pn] || (partsMap[pn]?.par_level) || '0'
+                }));
             // Also keep any rows not in parts.csv that still have qty (preserve unknown parts with stock)
             for (const pn of Object.keys(qtyMap)) {
                 if (!partsMap[pn] && qtyMap[pn] > 0) {
-                    updatedRows.push({ part_number: pn, quantity: qtyMap[pn] });
+                    updatedRows.push({
+                        part_number: pn,
+                        quantity: qtyMap[pn],
+                        par_level: locParMap[pn] || '0'
+                    });
                 }
             }
-            await fsp.writeFile(locFile, rowsToCSV(['part_number', 'quantity'], updatedRows), 'utf8');
+            await fsp.writeFile(locFile, rowsToCSV(locHeaders, updatedRows), 'utf8');
         }
 
         // Build response — preserve parts.csv order, unknown-but-stocked parts at end
@@ -466,14 +778,36 @@ app.get('/api/inventory/:location', async (req, res) => {
             ordersMap = parseOrdersCSV(ordersText);
         } catch { /* no orders file yet */ }
 
-        // Load per-location par levels and overlay onto global par_level
-        const allParLevels = await readParLevels();
-        const locationParLevels = allParLevels[safe] || {};
+        // Load per-location par levels from location CSV and overlay onto global par_level
+        // Build map of location-specific par levels from invRows
+        const locationParMap = {};
+        invRows.forEach(r => {
+            const parVal = r.par_level ? parseInt(r.par_level, 10) : null;
+            if (parVal !== null) {
+                locationParMap[r.part_number] = parVal;
+            }
+        });
 
         const inventory = orderedPns.map(pn => {
             const base = { part_number: pn, quantity: qtyMap[pn], on_order: ordersMap[pn] || 0, ...(partsMap[pn] || {}) };
-            if (Object.prototype.hasOwnProperty.call(locationParLevels, pn)) {
-                base.par_level = String(locationParLevels[pn]);
+            // Use location par if available, otherwise use global par from parts.csv
+            if (Object.prototype.hasOwnProperty.call(locationParMap, pn)) {
+                base.par_level = String(locationParMap[pn]);
+            }
+            // Z10 Master List is primary source for descriptions
+            if (z10DescriptionMap[pn]) {
+                base.full_description = z10DescriptionMap[pn];
+                // Extract first meaningful line from Z10 for short description (skip just the part number)
+                const lines = z10DescriptionMap[pn].split('\n').map(l => l.trim()).filter(l => l && l !== pn);
+                if (lines.length > 0) {
+                    base.description = lines[0];
+                } else if (!base.description) {
+                    // Fall back to parts.csv only if Z10 has no useful content
+                    base.description = '';
+                }
+            } else if (!base.description) {
+                // If part not in Z10 and no description in parts.csv, leave blank
+                base.description = '';
             }
             return base;
         });
@@ -489,7 +823,7 @@ app.get('/api/inventory/:location', async (req, res) => {
 
 app.post('/api/inventory/:location/adjust', async (req, res) => {
     try {
-        const safe = req.params.location.replace(/[^a-zA-Z0-9_\-]/g, '');
+        const safe = req.params.location.replace(/[^a-zA-Z0-9 _\-]/g, '').replace(/\s+/g, '_');
         const { part_number, action, quantity, user } = req.body;
 
         if (!user || !user.trim()) return res.status(400).json({ error: 'User name required' });
@@ -517,7 +851,7 @@ app.post('/api/inventory/:location/adjust', async (req, res) => {
         }
 
         rows[rowIdx].quantity = newQty;
-        const allHeaders = headers.length ? headers : ['part_number', 'quantity'];
+        const allHeaders = headers.length ? headers : ['part_number', 'quantity', 'par_level'];
         await fsp.writeFile(locFile, rowsToCSV(allHeaders, rows), 'utf8');
 
         // Append to transaction log
@@ -621,11 +955,22 @@ app.post('/api/orders/upload', async (req, res) => {
         if (!csv || typeof csv !== 'string') return res.status(400).json({ error: 'CSV content required' });
         const safeLoc = (location || '').replace(/[^a-zA-Z0-9_\-]/g, '');
         if (!safeLoc) return res.status(400).json({ error: 'location required — select a location before uploading a PO' });
+        
+        // Block PO uploads for truck locations
+        if (safeLoc.toLowerCase().startsWith('truck_')) {
+            return res.status(403).json({ error: 'Cannot upload POs for truck stocks' });
+        }
+
+        // Detect binary/Excel files read as text (contain null bytes or excessive control characters)
+        if (/[\x00-\x08\x0B-\x0C\x0E-\x1F]/.test(csv.slice(0, 500))) {
+            return res.status(400).json({ error: 'File appears to be binary (Excel .xlsx?). Please convert to CSV format and try again.' });
+        }
 
         const { headers, rows } = parseCSV(csv);
         // No silent fallback to column index — require detectable headers
         const pnCol  = headers.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h));
         const qtyCol = headers.find(h => /qty|quantity/i.test(h) && h !== pnCol);
+        const descCol = headers.find(h => /description|desc|desc\.|description\.|notes/i.test(h) && h !== pnCol);
         if (!pnCol) return res.status(400).json({ error: 'Could not detect a part number column (expected: part_number, pn, partno, sku, etc.)' });
         if (!qtyCol) return res.status(400).json({ error: 'Could not detect a quantity column (expected: qty, quantity)' });
 
@@ -635,23 +980,68 @@ app.post('/api/orders/upload', async (req, res) => {
         const ordersFile = ordersFileForLocation(safeLoc);
         await ensureOrdersFile(ordersFile);
         const existingText = await fsp.readFile(ordersFile, 'utf8');
+        
+        // Save upload history with the uploaded CSV and original filename
+        const uploadId = await saveUploadHistory(safeLoc, 'PO', csv, req.body.filename || 'upload.csv');
+        
         const orderMap = parseOrdersCSV(existingText);
 
         let added = 0, skipped = 0;
         const newPns = [];
+        const newOrdersForParts = {}; // Track quantities for new parts to auto-set par
+        const partDescriptions = {}; // Track descriptions for new parts
         rows.forEach(row => {
             const pn  = (row[pnCol]  || '').trim();
             const qty = parseInt(row[qtyCol], 10) || 0;
+            const desc = descCol ? (row[descCol] || '').trim() : '';
             if (!PN_FORMAT.test(pn)) { skipped++; return; }
             if (qty > 0) {
                 const isNew = !(pn in orderMap);
                 orderMap[pn] = (orderMap[pn] || 0) + qty;
                 added++;
-                if (isNew) newPns.push(pn);
+                if (isNew) {
+                    newPns.push(pn);
+                    newOrdersForParts[pn] = qty;
+                    if (desc && !partDescriptions[pn]) {
+                        partDescriptions[pn] = desc;
+                    }
+                }
             }
         });
 
         await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
+
+        // Auto-set par_level for new parts with no history at this location
+        if (newPns.length > 0) {
+            const locFile = path.join(LOCATIONS_DIR, `${safeLoc}.csv`);
+            try {
+                const locText = await fsp.readFile(locFile, 'utf8');
+                const { headers, rows: locRows } = parseCSV(locText);
+                
+                // Ensure par_level column exists
+                if (!headers.includes('par_level')) {
+                    headers.push('par_level');
+                }
+                
+                let updated = false;
+                // For each new part order, if it has no qty and no par at location, set par to order qty
+                locRows.forEach(row => {
+                    if (newPns.includes(row.part_number)) {
+                        const hasNoQty = (parseInt(row.quantity, 10) || 0) === 0;
+                        const hasNoPar = !row.par_level || parseInt(row.par_level, 10) === 0;
+                        
+                        if (hasNoQty && hasNoPar) {
+                            row.par_level = newOrdersForParts[row.part_number];
+                            updated = true;
+                        }
+                    }
+                });
+                
+                if (updated) {
+                    await fsp.writeFile(locFile, rowsToCSV(headers, locRows), 'utf8');
+                }
+            } catch { /* location file may not exist yet - non-fatal */ }
+        }
 
         // Add brand-new part numbers to master parts.csv
         if (newPns.length > 0) {
@@ -659,12 +1049,17 @@ app.post('/api/orders/upload', async (req, res) => {
                 const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
                 const { headers: partsHeaders, rows: partsRows } = parseCSV(partsText);
                 const partsPnCol = partsHeaders.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || partsHeaders[0];
+                const partsDescCol = partsHeaders.find(h => /^description$/i.test(h));
                 const existingPns = new Set(partsRows.map(r => (r[partsPnCol] || '').trim()));
                 newPns.forEach(pn => {
                     if (!existingPns.has(pn)) {
                         const newRow = {};
                         partsHeaders.forEach(h => { newRow[h] = ''; });
                         newRow[partsPnCol] = pn;
+                        // Populate description if provided in upload CSV
+                        if (partsDescCol && partDescriptions[pn]) {
+                            newRow[partsDescCol] = partDescriptions[pn];
+                        }
                         partsRows.push(newRow);
                     }
                 });
@@ -673,7 +1068,7 @@ app.post('/api/orders/upload', async (req, res) => {
         }
 
         const total = Object.values(orderMap).filter(q => q > 0).length;
-        res.json({ merged: added, skipped, newToMaster: newPns.length, total });
+        res.json({ merged: added, skipped, newToMaster: newPns.length, total, uploadId });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -682,10 +1077,15 @@ app.post('/api/orders/upload', async (req, res) => {
 // POST /api/inventory/:location/bulk-receive — body: { csv, user } — adds quantities directly to shed stock
 app.post('/api/inventory/:location/bulk-receive', async (req, res) => {
     try {
-        const safe = req.params.location.replace(/[^a-zA-Z0-9_\-]/g, '');
+        const safe = req.params.location.replace(/[^a-zA-Z0-9 _\-]/g, '').replace(/\s+/g, '_');
         const { csv, user } = req.body;
         if (!csv || typeof csv !== 'string') return res.status(400).json({ error: 'CSV content required' });
         if (!user || !user.trim()) return res.status(400).json({ error: 'User name required' });
+
+        // Detect binary/Excel files read as text (contain null bytes or excessive control characters)
+        if (/[\x00-\x08\x0B-\x0C\x0E-\x1F]/.test(csv.slice(0, 500))) {
+            return res.status(400).json({ error: 'File appears to be binary (Excel .xlsx?). Please convert to CSV format and try again.' });
+        }
 
         const { headers: csvHeaders, rows: csvRows } = parseCSV(csv);
         // Gap 4: require detectable headers — no silent fallback to column index
@@ -708,9 +1108,19 @@ app.post('/api/inventory/:location/bulk-receive', async (req, res) => {
         });
         if (Object.keys(addMap).length === 0) return res.status(400).json({ error: 'No valid rows found in CSV (part numbers must be 8 digits)' });
 
-        // Read and update location inventory
+        // Read current location inventory for upload history
         const locFile = path.join(LOCATIONS_DIR, `${safe}.csv`);
         const invText = await fsp.readFile(locFile, 'utf8');
+        
+        // Capture current on-order quantities before the upload (for rollback)
+        const ordersFile = ordersFileForLocation(safe);
+        const ordersText = await fsp.readFile(ordersFile, 'utf8');
+        const beforeOrderState = parseOrdersCSV(ordersText);
+        
+        // Save upload history with the uploaded CSV and original filename
+        const uploadId = await saveUploadHistory(safe, 'RecParts', csv, req.body.filename || 'upload.csv', beforeOrderState);
+
+        // Parse the inventory
         const { headers: invHeaders, rows: invRows } = parseCSV(invText);
         const allHeaders = invHeaders.length ? invHeaders : ['part_number', 'quantity'];
 
@@ -718,6 +1128,17 @@ app.post('/api/inventory/:location/bulk-receive', async (req, res) => {
         const logLines = [];
         let received = 0;
         const newParts = [];
+        const partDescriptions = {}; // Track descriptions from CSV
+        
+        // Build description map from CSV
+        const descCol = csvHeaders.find(h => /description|desc|desc\.|description\.|notes/i.test(h) && h !== pnCol);
+        csvRows.forEach(row => {
+            const pn = (row[pnCol] || '').trim();
+            const desc = descCol ? (row[descCol] || '').trim() : '';
+            if (PN_FORMAT.test(pn) && desc && !partDescriptions[pn]) {
+                partDescriptions[pn] = desc;
+            }
+        });
 
         Object.entries(addMap).forEach(([pn, qty]) => {
             // Gap 3: trim inventory-side part numbers before comparing
@@ -752,12 +1173,17 @@ app.post('/api/inventory/:location/bulk-receive', async (req, res) => {
                 const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
                 const { headers: partsHeaders, rows: partsRows } = parseCSV(partsText);
                 const partsPnCol = partsHeaders.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || partsHeaders[0];
+                const partsDescCol = partsHeaders.find(h => /^description$/i.test(h));
                 const existingPns = new Set(partsRows.map(r => (r[partsPnCol] || '').trim()));
                 newParts.forEach(pn => {
                     if (!existingPns.has(pn)) {
                         const newRow = {};
                         partsHeaders.forEach(h => { newRow[h] = ''; });
                         newRow[partsPnCol] = pn;
+                        // Populate description if provided in upload CSV
+                        if (partsDescCol && partDescriptions[pn]) {
+                            newRow[partsDescCol] = partDescriptions[pn];
+                        }
                         partsRows.push(newRow);
                     }
                 });
@@ -779,7 +1205,7 @@ app.post('/api/inventory/:location/bulk-receive', async (req, res) => {
             } catch { /* orders file not available */ }
         }
 
-        res.json({ received, skipped, newToMaster: newParts.length });
+        res.json({ received, skipped, newToMaster: newParts.length, uploadId });
     } catch (err) {
         if (err.code === 'ENOENT') return res.status(404).json({ error: 'Location not found' });
         res.status(500).json({ error: err.message });
@@ -1007,9 +1433,38 @@ async function migrateTransactionsToPerLocation() {
     }
 }
 
-runDailyBackup();
-setInterval(runDailyBackup, 60 * 60 * 1000); // re-check every hour
+// ─── API: Upload History ─────────────────────────────────────────────────────
+
+// GET /api/upload-history/:location — list recent uploads for a location
+app.get('/api/upload-history/:location', async (req, res) => {
+    try {
+        const location = req.params.location;
+        const uploads = await getUploadHistory(location);
+        res.json({ location, uploads });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/reverse-upload/:location/:uploadId — reverse the changes from a specific upload
+app.post('/api/reverse-upload/:location/:uploadId', async (req, res) => {
+    try {
+        const { location, uploadId } = req.params;
+        const result = await reverseUpload(location, uploadId);
+        if (!result.success) {
+            return res.status(400).json({ error: result.error });
+        }
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ─── Startup ──────────────────────────────────────────────────────────────────
+
+scheduleNightlyBackup();
 migrateTransactionsToPerLocation();
+loadZ10Descriptions();
 
 app.listen(PORT, () => {
     const env = process.env.DATA_DIR ? 'DEVELOPMENT' : 'PRODUCTION';
