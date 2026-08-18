@@ -78,6 +78,7 @@
             </div>
             <div id="po-action-bar" class="po-action-bar hidden">
                 <button id="btn-reorder" class="btn-reorder" title="Download CSV of parts below par level">&#8595; Reorder CSV</button>
+                <button id="btn-export-location-inventory" class="btn-reorder" title="Download inventory for current location">&#8595; Location Inventory</button>
                 <button id="btn-rec-parts" class="btn-rec-parts" title="Upload a CSV to add quantities directly to shed stock">&#8679; Rec Parts</button>
                 <input type="file" id="input-rec-parts-csv" accept=".csv" style="display:none">
             </div>
@@ -224,9 +225,67 @@
                 <button id="btn-admin-rename" class="btn-primary">&#9998; Rename Location</button>
                 <button id="btn-admin-new-location" class="btn-primary">&#43; New Location</button>
                 <button id="btn-admin-location-info" class="btn-primary">&#9432; Location Info</button>
+                <button id="btn-consolidated-inventory" class="btn-primary" title="Download consolidated inventory across all active locations">📊 Consolidated Report</button>
                 <button id="btn-admin-manage-hidden" class="btn-primary">&#128065; Manage Hidden Locations</button>
                 <button id="btn-admin-city-groups" class="btn-primary">&#127968; City Groups</button>
+                <button id="btn-admin-truck-manager" class="btn-primary">&#128666; Truck Mode Management</button>
                 <button id="btn-admin-cancel" class="btn-ghost">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Truck Mode Manager Modal -->
+    <div id="modal-truck-manager" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-box">
+            <div class="modal-title">&#128666; Truck Mode Management</div>
+            <p class="modal-hint">Select users who should see truck mode in their menu:</p>
+            <div id="truck-users-list" class="hidden-loc-list"></div>
+            <div id="truck-manager-error" class="modal-error hidden"></div>
+            <div class="modal-actions" style="margin-top:14px">
+                <button id="btn-truck-manager-close" class="btn-primary">Done</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Truck Transfer Scanner Modal -->
+    <div id="modal-truck-transfer-scanner" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-box">
+            <div class="modal-title">&#128666; Truck Transfer</div>
+            <div class="transfer-direction-selector" style="display:flex;gap:10px;margin:10px 0;justify-content:center;flex-wrap:wrap;">
+                <button id="btn-transfer-to-truck" class="btn-mode active" style="flex:1;min-width:120px;">
+                    <div>&#128666; TO TRUCK</div>
+                    <small>Location → Truck</small>
+                </button>
+                <button id="btn-transfer-from-truck" class="btn-mode" style="flex:1;min-width:120px;">
+                    <div>&#128205; FROM TRUCK</div>
+                    <small>Truck → Location</small>
+                </button>
+            </div>
+            <p class="modal-hint">Scan part to transfer:</p>
+            <input type="text" id="input-truck-transfer-pn" placeholder="Scan or enter part #..." autocomplete="off">
+            <div id="truck-transfer-display" class="barcode-display hidden" style="margin:15px 0;">
+                <div class="transfer-flow" style="display:flex;align-items:center;justify-content:space-around;gap:10px;margin:10px 0;">
+                    <div style="text-align:center;flex:1;">
+                        <div style="font-size:0.9rem;opacity:0.7;">FROM:</div>
+                        <div style="font-weight:bold;" id="transfer-from-name">Location</div>
+                        <div style="font-size:0.85rem;" id="transfer-from-qty">QTY: 0</div>
+                    </div>
+                    <div id="transfer-direction-arrow" style="font-size:1.5rem;">→</div>
+                    <div style="text-align:center;flex:1;">
+                        <div style="font-size:0.9rem;opacity:0.7;">TO:</div>
+                        <div style="font-weight:bold;" id="transfer-to-name">Truck</div>
+                        <div style="font-size:0.85rem;" id="transfer-to-qty">QTY: 0</div>
+                    </div>
+                </div>
+                <div class="barcode-part-info" style="margin-top:10px;">
+                    <strong>Part:</strong> <span id="transfer-part-pn"></span><br>
+                    <span id="transfer-part-desc" style="font-size:0.9rem;"></span>
+                </div>
+                <div id="truck-transfer-result-msg" style="margin-top:10px;font-weight:bold;text-align:center;"></div>
+            </div>
+            <div id="truck-transfer-error" class="modal-error hidden"></div>
+            <div class="modal-actions">
+                <button id="btn-truck-transfer-close" class="btn-ghost">Close</button>
             </div>
         </div>
     </div>

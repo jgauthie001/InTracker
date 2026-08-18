@@ -21,7 +21,8 @@ const state = {
     isTruckMode: false,
     locInventory: [],
     truckInventory: [],
-    hideOrder: true
+    hideOrder: true,
+    truckTransferDirection: 'to-truck'  // 'to-truck' or 'from-truck'
 };
 
 // ─── DOM Refs ─────────────────────────────────────────────────────────────────
@@ -43,6 +44,7 @@ const selectEquipFilter    = $('select-equipment-filter');
 const selectDictFilter     = $('select-dict-filter');
 const selectSort           = $('select-sort');
 const btnReorder           = $('btn-reorder');
+const btnExportLocationInventory = $('btn-export-location-inventory');
 const splashText           = $('splash-text');
 const btnTruckStock        = $('btn-truck-stock');
 const btnExitPo            = $('btn-exit-po');
@@ -99,6 +101,7 @@ const btnCityGroupsCancel = $('btn-city-groups-cancel');
 // Manage hidden locations modal
 const modalManageHidden      = $('modal-manage-hidden');
 const hiddenLocList          = $('hidden-loc-list');
+const btnConsolidatedInventory = $('btn-consolidated-inventory');
 const btnManageHiddenRestore = $('btn-manage-hidden-restore');
 const btnManageHiddenClose   = $('btn-manage-hidden-close');
 
@@ -156,6 +159,30 @@ const btnBarcodeClose           = $('btn-barcode-close');
 const btnBarcodeModeAdd         = $('btn-barcode-mode-add');
 const btnBarcodeModeSub         = $('btn-barcode-mode-subtract');
 
+// Truck mode manager modal
+const modalTruckManager         = $('modal-truck-manager');
+const truckUsersList            = $('truck-users-list');
+const btnTruckManagerClose      = $('btn-truck-manager-close');
+const btnAdminTruckManager      = $('btn-admin-truck-manager');
+const truckManagerError         = $('truck-manager-error');
+
+// Truck transfer scanner modal
+const modalTruckTransferScanner = $('modal-truck-transfer-scanner');
+const inputTruckTransferPn      = $('input-truck-transfer-pn');
+const btnTransferToTruck        = $('btn-transfer-to-truck');
+const btnTransferFromTruck      = $('btn-transfer-from-truck');
+const truckTransferDisplay      = $('truck-transfer-display');
+const truckTransferError        = $('truck-transfer-error');
+const btnTruckTransferClose     = $('btn-truck-transfer-close');
+const transferFromName          = $('transfer-from-name');
+const transferToName            = $('transfer-to-name');
+const transferFromQty           = $('transfer-from-qty');
+const transferToQty             = $('transfer-to-qty');
+const transferPartPn            = $('transfer-part-pn');
+const transferPartDesc          = $('transfer-part-desc');
+const transferDirectionArrow    = $('transfer-direction-arrow');
+const truckTransferResultMsg    = $('truck-transfer-result-msg');
+
 // Transaction log
 const txnList          = $('txn-list');
 const txnPagination    = $('txn-pagination');
@@ -198,6 +225,88 @@ function showView(view) {
     view.classList.add('active');
 }
 
+// ─── Truck Mode User Preferences ──────────────────────────────────────────────
+function getTruckModeUsers() {
+    try { 
+        return JSON.parse(localStorage.getItem('intracker_truck_users') || '[]'); 
+    } catch { 
+        return []; 
+    }
+}
+
+function setTruckModeUsers(arr) {
+    localStorage.setItem('intracker_truck_users', JSON.stringify(arr));
+}
+
+function shouldUserSeeTruckMode() {
+    const enabledUsers = getTruckModeUsers();
+    return enabledUsers.includes(state.user.trim());
+}
+
+function toggleTruckModeForUser(username, enabled) {
+    let users = getTruckModeUsers();
+    if (enabled) {
+        if (!users.includes(username)) users.push(username);
+    } else {
+        users = users.filter(u => u !== username);
+    }
+    setTruckModeUsers(users);
+}
+
+// Load all unique users from transaction history (extracted on server)
+// For now, we'll populate this manually or via API call
+async function loadAllUsers() {
+    try {
+        const res = await fetch('/api/transactions');
+        const data = await res.json();
+        const userSet = new Set();
+        data.rows?.forEach(row => {
+            if (row.user && row.user.trim()) userSet.add(row.user.trim());
+        });
+        return Array.from(userSet).sort();
+    } catch {
+        return [];
+    }
+}
+
+async function openTruckManagerModal() {
+    truckUsersList.innerHTML = '';
+    const allUsers = await loadAllUsers();
+    const enabledUsers = getTruckModeUsers();
+    
+    if (allUsers.length === 0) {
+        truckManagerError.textContent = 'No users found in transaction history';
+        truckManagerError.classList.remove('hidden');
+        return;
+    }
+    
+    const frag = document.createDocumentFragment();
+    allUsers.forEach(user => {
+        const label = document.createElement('label');
+        label.className = 'truck-user-item';
+        label.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px;cursor:pointer;';
+        
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = user;
+        checkbox.checked = enabledUsers.includes(user);
+        checkbox.className = 'truck-user-toggle';
+        checkbox.addEventListener('change', (e) => {
+            toggleTruckModeForUser(user, e.target.checked);
+        });
+        
+        const span = document.createElement('span');
+        span.textContent = user;
+        
+        label.appendChild(checkbox);
+        label.appendChild(span);
+        frag.appendChild(label);
+    });
+    
+    truckUsersList.appendChild(frag);
+    truckManagerError.classList.add('hidden');
+}
+
 // ─── User Name ────────────────────────────────────────────────────────────────
 function applyUserState() {
     const name = state.user.trim();
@@ -209,7 +318,12 @@ function applyUserState() {
         btnNewLocation.disabled = false;
         btnManageLocations.disabled = false;
         btnTransactions.disabled = false;
-        btnTruckStock.disabled = false;
+        
+        // Truck mode: only enable if user is in preference list
+        const canUseTruckMode = shouldUserSeeTruckMode();
+        btnTruckStock.disabled = !canUseTruckMode;
+        btnTruckStock.style.opacity = canUseTruckMode ? '1' : '0.5';
+        btnTruckStock.title = canUseTruckMode ? 'Switch to Truck Transfer Mode' : 'Truck mode not enabled for your account';
 
         btnUploadHistory.disabled = false;
         if (!state.location) {
@@ -1119,11 +1233,13 @@ let barcodeInputLastTime = 0;
 
 // Global barcode scanner detector - opens modal when barcode is scanned anywhere
 document.addEventListener('keydown', (e) => {
-    // Don't intercept if inside a textarea or contenteditable, or if modal already open
+    // Don't intercept if inside ANY form input field (FIX for double-keystroke bug)
     const target = e.target;
-    if (target.tagName === 'TEXTAREA' || target.contentEditable === 'true') return;
-    if (target === inputBarcodePn) return;  // Let input field handle it normally
-    if (!modalBarcode.classList.contains('hidden')) return;  // Modal already open
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.contentEditable === 'true') return;
+    
+    // Don't intercept if any modal is open that uses input fields
+    if (!modalBarcode.classList.contains('hidden')) return;  // Normal barcode modal open
+    if (!modalTruckTransferScanner.classList.contains('hidden')) return;  // Truck transfer modal open
     if (!state.user.trim() || !state.location) return;  // User/location required
     
     // Detect barcode scanner pattern: rapid keystrokes followed by Enter
@@ -1134,8 +1250,15 @@ document.addEventListener('keydown', (e) => {
         // Enter key - check if we have a barcode buffer
         if (barcodeInputBuffer.length >= 5) {  // Minimum barcode length
             e.preventDefault();
-            // Auto-open modal with detected barcode
-            openBarcodeModal();
+            
+            // Route to appropriate modal based on context
+            if (state.isTruckMode && state.location !== state.truckLocation) {
+                // In truck mode at a non-truck location → truck transfer scanner
+                openTruckTransferScannerModal();
+            } else {
+                // Normal inventory mode or at truck location → normal barcode scanner
+                openBarcodeModal();
+            }
             barcodeInputBuffer = '';
         }
         barcodeInputBuffer = '';
@@ -1312,9 +1435,174 @@ btnBarcodeClose.addEventListener('click', () => {
     currentBarcodeItem = null;
 });
 
+// ─── Truck Transfer Scanner Modal ─────────────────────────────────────────────
+
+function openTruckTransferScannerModal() {
+    if (!state.user.trim()) { showToast('Please enter your name first'); return; }
+    if (!state.location) { showToast('Please select a location first'); return; }
+    
+    currentBarcodeItem = null;
+    state.truckTransferDirection = 'to-truck';  // Default: send to truck
+    inputTruckTransferPn.value = '';
+    truckTransferError.classList.add('hidden');
+    truckTransferDisplay.classList.add('hidden');
+    updateTransferDirectionDisplay();
+    modalTruckTransferScanner.classList.remove('hidden');
+    inputTruckTransferPn.focus();
+}
+
+function updateTransferDirectionDisplay() {
+    if (state.truckTransferDirection === 'to-truck') {
+        btnTransferToTruck.classList.add('active');
+        btnTransferFromTruck.classList.remove('active');
+        transferFromName.textContent = state.location.replace(/_/g, ' ');
+        transferToName.textContent = 'Truck';
+        transferDirectionArrow.textContent = '→';
+        inputTruckTransferPn.placeholder = 'Scan part to send to truck';
+    } else {
+        btnTransferFromTruck.classList.add('active');
+        btnTransferToTruck.classList.remove('active');
+        transferFromName.textContent = 'Truck';
+        transferToName.textContent = state.location.replace(/_/g, ' ');
+        transferDirectionArrow.textContent = '←';
+        inputTruckTransferPn.placeholder = 'Scan part from truck';
+    }
+}
+
+btnTransferToTruck.addEventListener('click', () => {
+    state.truckTransferDirection = 'to-truck';
+    updateTransferDirectionDisplay();
+    inputTruckTransferPn.focus();
+});
+
+btnTransferFromTruck.addEventListener('click', () => {
+    state.truckTransferDirection = 'from-truck';
+    updateTransferDirectionDisplay();
+    inputTruckTransferPn.focus();
+});
+
+inputTruckTransferPn.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter') {
+        const pn = inputTruckTransferPn.value.trim().toUpperCase();
+        if (!pn) {
+            truckTransferError.textContent = 'Please enter a part number';
+            truckTransferError.classList.remove('hidden');
+            return;
+        }
+        
+        // Find part in source location
+        const sourceInventory = state.truckTransferDirection === 'to-truck' 
+            ? state.inventory  // Transferring FROM location
+            : state.truckInventory;  // Transferring FROM truck
+        
+        const item = sourceInventory?.find(i => i.part_number.toUpperCase() === pn);
+        
+        // Get destination qty (may be 0 if not found)
+        const destInventory = state.truckTransferDirection === 'to-truck'
+            ? state.truckInventory
+            : state.inventory;
+        const destItem = destInventory?.find(i => i.part_number === pn);
+        const destQty = destItem?.quantity || 0;
+        const sourceQty = item?.quantity || 0;
+        
+        // Update display
+        transferFromQty.textContent = `QTY: ${sourceQty}`;
+        transferToQty.textContent = `QTY: ${destQty}`;
+        transferPartPn.textContent = pn;
+        transferPartDesc.textContent = item?.description || '(No description)';
+        
+        // Show transfer message
+        const action = state.truckTransferDirection === 'to-truck' ? 'to truck' : 'to location';
+        truckTransferResultMsg.textContent = `✓ Transfer 1 unit ${action}`;
+        
+        truckTransferError.classList.add('hidden');
+        truckTransferError.textContent = '';
+        truckTransferDisplay.classList.remove('hidden');
+        
+        // AUTO-EXECUTE TRANSFER
+        await performTruckTransfer(pn);
+        
+        // Reset for next scan
+        setTimeout(() => {
+            inputTruckTransferPn.value = '';
+            inputTruckTransferPn.focus();
+            truckTransferDisplay.classList.add('hidden');
+        }, 2000);
+    }
+});
+
+async function performTruckTransfer(pn) {
+    const sourceLocation = state.truckTransferDirection === 'to-truck' 
+        ? state.location 
+        : state.truckLocation;
+    const destLocation = state.truckTransferDirection === 'to-truck'
+        ? state.truckLocation
+        : state.location;
+    
+    try {
+        const res = await fetch('/api/transfer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                from_location: sourceLocation,
+                to_location: destLocation,
+                part_number: pn,
+                quantity: 1,
+                user: state.user.trim()
+            })
+        });
+        
+        const data = await res.json();
+        if (!res.ok) {
+            truckTransferError.textContent = `❌ ${data.error || 'Transfer failed'}`;
+            truckTransferError.classList.remove('hidden');
+            return;
+        }
+        
+        // Update local state
+        if (state.truckTransferDirection === 'to-truck') {
+            const locItem = state.inventory.find(i => i.part_number === pn);
+            if (locItem) locItem.quantity = data.from.quantity;
+            
+            const truckItem = state.truckInventory.find(i => i.part_number === pn);
+            if (truckItem) {
+                truckItem.quantity = data.to.quantity;
+            } else {
+                state.truckInventory.push({ part_number: pn, quantity: data.to.quantity });
+            }
+        } else {
+            const truckItem = state.truckInventory.find(i => i.part_number === pn);
+            if (truckItem) truckItem.quantity = data.from.quantity;
+            
+            const locItem = state.inventory.find(i => i.part_number === pn);
+            if (locItem) {
+                locItem.quantity = data.to.quantity;
+            } else {
+                state.inventory.push({ part_number: pn, quantity: data.to.quantity });
+            }
+        }
+        
+        showToast(`✓ Transferred 1 × ${pn}`);
+    } catch (err) {
+        truckTransferError.textContent = '❌ Server error. Please try again.';
+        truckTransferError.classList.remove('hidden');
+    }
+}
+
+btnTruckTransferClose.addEventListener('click', () => {
+    modalTruckTransferScanner.classList.add('hidden');
+    currentBarcodeItem = null;
+});
+
 // ─── Truck Stock ──────────────────────────────────────────────────────────────
 btnTruckStock.addEventListener('click', async () => {
     if (!state.user.trim()) { showToast('Please enter your name first'); return; }
+    
+    // Verify truck mode is enabled for this user
+    if (!state.isTruckMode && !shouldUserSeeTruckMode()) {
+        showToast('Truck mode is not enabled for your account');
+        return;
+    }
 
     if (state.isTruckMode) {
         // Exit truck view → return to location inventory
@@ -1715,6 +2003,16 @@ btnAdminCityGroups.addEventListener('click', () => {
     openCityGroupsModal();
 });
 
+btnAdminTruckManager.addEventListener('click', () => {
+    modalAdminChoice.classList.add('hidden');
+    openTruckManagerModal();
+    modalTruckManager.classList.remove('hidden');
+});
+
+btnTruckManagerClose.addEventListener('click', () => {
+    modalTruckManager.classList.add('hidden');
+});
+
 btnAdminLocationInfo.addEventListener('click', () => {
     modalAdminChoice.classList.add('hidden');
     const locName = state.location;
@@ -1745,6 +2043,185 @@ btnManageHiddenRestore.addEventListener('click', async () => {
 btnManageHiddenClose.addEventListener('click', () => {
     modalManageHidden.classList.add('hidden');
 });
+
+// ─── Export Location Inventory (PO Entry Mode) ─────────────────────────────────
+btnExportLocationInventory.addEventListener('click', async () => {
+    const loc = activeLocation();
+    if (!loc) { showToast('Select a location first'); return; }
+    
+    btnExportLocationInventory.disabled = true;
+    btnExportLocationInventory.textContent = 'Exporting…';
+    
+    try {
+        await generateLocationInventoryCsv(loc);
+    } finally {
+        btnExportLocationInventory.disabled = false;
+        btnExportLocationInventory.textContent = '↓ Location Inventory';
+    }
+});
+
+async function generateLocationInventoryCsv(locName) {
+    const date = new Date().toISOString().slice(0, 10);
+    const headerRow = ['part_number', 'short_description', 'par_level', 'quantity_on_hand'];
+    const lines = [headerRow.map(csvEscape).join(',')];
+    let totalParts = 0;
+    
+    try {
+        const res = await fetch(`/api/inventory/${encodeURIComponent(locName)}`);
+        const data = await res.json();
+        if (!res.ok) { showToast(`Error loading inventory: ${data.error}`, 3000); return; }
+        
+        const inventory = data.inventory;
+        inventory.forEach(item => {
+            const description = getDescription(item) || '';
+            const parLevel = getParLevel(item) || 0;
+            const quantity = item.quantity || 0;
+            
+            lines.push([
+                item.part_number,
+                description,
+                String(parLevel),
+                String(quantity)
+            ].map(csvEscape).join(','));
+            totalParts++;
+        });
+        
+        if (lines.length === 1) { showToast('No parts in this location', 3000); return; }
+        
+        const locNameClean = locName.replace(/_/g, ' ');
+        const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `inventory_${locNameClean.replace(/\s+/g, '_')}_${date}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast(`Location inventory downloaded (${totalParts} part${totalParts === 1 ? '' : 's'})`);
+    } catch {
+        showToast('Server error generating inventory', 3000);
+    }
+}
+
+// ─── Export Consolidated Inventory Report ─────────────────────────────────────
+btnConsolidatedInventory.addEventListener('click', async () => {
+    btnConsolidatedInventory.disabled = true;
+    btnConsolidatedInventory.textContent = 'Generating…';
+    
+    try {
+        await generateConsolidatedInventoryCsv();
+    } finally {
+        btnConsolidatedInventory.disabled = false;
+        btnConsolidatedInventory.textContent = '📊 Consolidated Report';
+    }
+});
+
+async function generateConsolidatedInventoryCsv() {
+    const date = new Date().toISOString().slice(0, 10);
+    
+    try {
+        // Get all locations
+        const locRes = await fetch('/api/locations');
+        const allLocations = await locRes.json();
+        
+        // Filter out trucks and demo locations
+        const activeLocations = allLocations.filter(loc => 
+            !loc.startsWith('truck_') && 
+            !loc.toLowerCase().includes('truck') && 
+            !loc.toLowerCase().includes('demo')
+        ).sort();
+        
+        if (activeLocations.length === 0) {
+            showToast('No active locations found', 3000);
+            return;
+        }
+        
+        // Build header: part_number, short_description, then all par_levels, then all qty columns
+        const headerRow = ['part_number', 'short_description'];
+        
+        // Add all par_level columns
+        activeLocations.forEach(loc => {
+            const locDisplay = loc.replace(/_/g, ' ');
+            headerRow.push(`${locDisplay}_par_level`);
+        });
+        
+        // Add all qty columns
+        activeLocations.forEach(loc => {
+            const locDisplay = loc.replace(/_/g, ' ');
+            headerRow.push(`${locDisplay}_qty_on_hand`);
+        });
+        
+        const lines = [headerRow.map(csvEscape).join(',')];
+        
+        // Map to collect all part numbers and their data
+        const partMap = {};
+        
+        // Load inventory for each location
+        for (const locName of activeLocations) {
+            try {
+                const res = await fetch(`/api/inventory/${encodeURIComponent(locName)}`);
+                const data = await res.json();
+                if (!res.ok) continue;
+                
+                const inventory = data.inventory;
+                inventory.forEach(item => {
+                    if (!partMap[item.part_number]) {
+                        partMap[item.part_number] = {
+                            part_number: item.part_number,
+                            description: getDescription(item) || '',
+                            locations: {}
+                        };
+                    }
+                    partMap[item.part_number].locations[locName] = {
+                        par_level: getParLevel(item) || 0,
+                        quantity: item.quantity || 0
+                    };
+                });
+            } catch {
+                // Skip location if error
+                continue;
+            }
+        }
+        
+        // Build data rows
+        Object.values(partMap).forEach(part => {
+            const row = [part.part_number, part.description];
+            
+            // Add all par levels first
+            activeLocations.forEach(loc => {
+                const locData = part.locations[loc];
+                if (locData) {
+                    row.push(String(locData.par_level));
+                } else {
+                    row.push('0');
+                }
+            });
+            
+            // Then add all quantities
+            activeLocations.forEach(loc => {
+                const locData = part.locations[loc];
+                if (locData) {
+                    row.push(String(locData.quantity));
+                } else {
+                    row.push('0');
+                }
+            });
+            
+            lines.push(row.map(csvEscape).join(','));
+        });
+        
+        const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `consolidated_inventory_${date}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+        modalAdminChoice.classList.add('hidden');
+        showToast(`Consolidated report downloaded (${Object.keys(partMap).length} part${Object.keys(partMap).length === 1 ? '' : 's'})`);
+    } catch {
+        showToast('Server error generating report', 3000);
+    }
+}
 
 // ─── Manage Locations modal (all-locations toggle) ────────────────────────────
 btnManageLocations.addEventListener('click', openManageLocations);
