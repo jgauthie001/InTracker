@@ -128,6 +128,38 @@ function parseCSV(text) {
     return { headers, rows };
 }
 
+// ─── Validate Location CSV Headers ────────────────────────────────────────────
+// Ensures location CSVs have required columns: part_number, quantity, par_level
+function validateLocationCSVHeaders(headers) {
+    const required = ['part_number', 'quantity', 'par_level'];
+    const hasAll = required.every(h => headers.includes(h));
+    return hasAll ? { valid: true, headers } : { valid: false, headers };
+}
+
+// ─── Repair Malformed Location CSV ────────────────────────────────────────────
+// If headers are missing required columns, reconstruct with sensible defaults
+function repairLocationCSV(text) {
+    const { headers, rows } = parseCSV(text);
+    const { valid } = validateLocationCSVHeaders(headers);
+    
+    if (valid) return text; // No repair needed
+    
+    // Malformed — attempt to reconstruct
+    console.warn(`[InTracker] Detected malformed location CSV, attempting recovery...`);
+    
+    // If only par_level exists, reconstruct as: part_number (from values), quantity (0), par_level
+    if (headers.includes('par_level') && !headers.includes('part_number')) {
+        const repaired = rows.map((row, idx) => {
+            // Assume row.par_level contains the par value from malformed file
+            return { part_number: `UNKNOWN_${idx}`, quantity: 0, par_level: row.par_level || '0' };
+        });
+        return rowsToCSV(['part_number', 'quantity', 'par_level'], repaired);
+    }
+    
+    // Fallback: create empty structure with required columns
+    return rowsToCSV(['part_number', 'quantity', 'par_level'], rows);
+}
+
 function splitCSVLine(line) {
     const result = [];
     let current = '';
@@ -234,9 +266,11 @@ async function addHiddenLocation(name) {
     }
 }
 
-async function runDailyBackup() {
-    const today = new Date().toISOString().slice(0, 10);
-    const backupDir = path.join(BACKUPS_DIR, today);
+async function runHourlyBackup() {
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10);
+    const hourStr = String(now.getHours()).padStart(2, '0');
+    const backupDir = path.join(BACKUPS_DIR, dateStr, `hour_${hourStr}`);
     try { await fsp.access(backupDir); return; } catch { /* proceed */ }
     await fsp.mkdir(backupDir, { recursive: true });
     
@@ -264,25 +298,25 @@ async function runDailyBackup() {
         }
     } catch {}
     
-    console.log(`[InTracker] Backup completed: ${today}`);
+    console.log(`[InTracker] Backup completed: ${dateStr} ${hourStr}:00`);
 }
 
-// Schedule backup to run nightly at midnight
-function scheduleNightlyBackup() {
+// Schedule backup to run hourly
+function scheduleHourlyBackup() {
     const now = new Date();
-    const tomorrow = new Date(now);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(0, 0, 0, 0);
+    const nextHour = new Date(now);
+    nextHour.setHours(nextHour.getHours() + 1);
+    nextHour.setMinutes(0, 0, 0);
     
-    let timeUntilMidnight = tomorrow.getTime() - now.getTime();
+    let timeUntilNextHour = nextHour.getTime() - now.getTime();
     
-    console.log(`[InTracker] Nightly backup scheduled for ${tomorrow.toISOString()}`);
+    console.log(`[InTracker] Hourly backup scheduled for ${nextHour.toISOString()}`);
     
     setTimeout(() => {
-        runDailyBackup();
-        // After first run, schedule it to repeat every 24 hours
-        setInterval(runDailyBackup, 24 * 60 * 60 * 1000);
-    }, timeUntilMidnight);
+        runHourlyBackup();
+        // After first run, schedule it to repeat every hour
+        setInterval(runHourlyBackup, 60 * 60 * 1000);
+    }, timeUntilNextHour);
 }
 
 // ─── Upload History Management ───────────────────────────────────────────────
@@ -685,8 +719,25 @@ app.get('/api/inventory/:location', async (req, res) => {
     try {
         const safe = req.params.location.replace(/[^a-zA-Z0-9 _\-]/g, '').replace(/\s+/g, '_');
         const locFile = path.join(LOCATIONS_DIR, `${safe}.csv`);
-        const invText = await fsp.readFile(locFile, 'utf8');
-        const { rows: invRows } = parseCSV(invText);
+        let invText = await fsp.readFile(locFile, 'utf8');
+        
+        // Validate and repair malformed CSV if needed
+        let parsedCSV = parseCSV(invText);
+        const headerValidation = validateLocationCSVHeaders(parsedCSV.headers);
+        if (!headerValidation.valid) {
+            console.warn(`[InTracker] Malformed location CSV detected: ${safe}.csv — attempting repair`);
+            invText = repairLocationCSV(invText);
+            // Persist the repaired file
+            try {
+                await fsp.writeFile(locFile, invText, 'utf8');
+                console.log(`[InTracker] Repaired and saved: ${safe}.csv`);
+            } catch (writeErr) {
+                console.error(`[InTracker] Failed to save repaired CSV: ${writeErr.message}`);
+            }
+            parsedCSV = parseCSV(invText);
+        }
+        
+        const { rows: invRows } = parsedCSV;
 
         // Build a qty map
         const qtyMap = {};
@@ -1462,7 +1513,7 @@ app.post('/api/reverse-upload/:location/:uploadId', async (req, res) => {
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
-scheduleNightlyBackup();
+scheduleHourlyBackup();
 migrateTransactionsToPerLocation();
 loadZ10Descriptions();
 
