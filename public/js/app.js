@@ -22,7 +22,8 @@ const state = {
     locInventory: [],
     truckInventory: [],
     hideOrder: true,
-    truckTransferDirection: 'to-truck'  // 'to-truck' or 'from-truck'
+    truckTransferDirection: 'to-truck',  // 'to-truck' or 'from-truck'
+    obsoleteMap: {}  // {part_number: replacement_part_number}
 };
 
 // ─── DOM Refs ─────────────────────────────────────────────────────────────────
@@ -89,6 +90,16 @@ const btnAdminLocationInfo  = $('btn-admin-location-info');
 const btnAdminManageHidden  = $('btn-admin-manage-hidden');
 const btnAdminCancel        = $('btn-admin-cancel');
 const btnAdminCityGroups    = $('btn-admin-city-groups');
+const btnAdminObsoleteParts = $('btn-admin-obsolete-parts');
+
+// Obsolete parts modal
+const modalObsoleteParts    = $('modal-obsolete-parts');
+const obsoletePartsList     = $('obsolete-parts-list');
+const inputObsoletePn       = $('input-obsolete-pn');
+const inputReplacementPn    = $('input-replacement-pn');
+const btnAddObsolete        = $('btn-add-obsolete');
+const btnObsoleteClose      = $('btn-obsolete-close');
+const obsoleteError         = $('obsolete-error');
 
 // City groups modal
 const modalCityGroups     = $('modal-city-groups');
@@ -212,8 +223,12 @@ function updateHeaderHeight() {
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
 let toastTimer;
-function showToast(msg, duration = 2500) {
+function showToast(msg, duration = 2500, type = 'default') {
     toast.textContent = msg;
+    toast.className = 'toast'; // Reset classes
+    if (type === 'warning') {
+        toast.classList.add('warning');
+    }
     toast.classList.remove('hidden');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => toast.classList.add('hidden'), duration);
@@ -305,6 +320,72 @@ async function openTruckManagerModal() {
     
     truckUsersList.appendChild(frag);
     truckManagerError.classList.add('hidden');
+}
+
+function openObsoletePartsModal() {
+    inputObsoletePn.value = '';
+    inputReplacementPn.value = '';
+    obsoleteError.classList.add('hidden');
+    renderObsoletePartsList();
+    modalObsoleteParts.classList.remove('hidden');
+    setTimeout(() => inputObsoletePn.focus(), 100);
+}
+
+function renderObsoletePartsList() {
+    obsoletePartsList.innerHTML = '';
+    
+    if (Object.keys(state.obsoleteMap).length === 0) {
+        obsoletePartsList.innerHTML = '<p style="text-align: center; opacity: 0.7;">No obsolete parts defined yet</p>';
+        return;
+    }
+    
+    const frag = document.createDocumentFragment();
+    Object.entries(state.obsoleteMap).forEach(([pn, replacement]) => {
+        const item = document.createElement('div');
+        item.className = 'obsolete-item';
+        item.style.cssText = 'display: flex; align-items: center; gap: 8px; padding: 10px; background: var(--surface2); border-radius: 4px; justify-content: space-between;';
+        
+        const info = document.createElement('div');
+        info.style.cssText = 'display: flex; gap: 8px; align-items: center; flex: 1;';
+        info.innerHTML = `<span style="font-weight: bold; font-family: monospace;">${escapeHtml(pn)}</span><span>→</span><span style="font-weight: bold; font-family: monospace;">${escapeHtml(replacement)}</span>`;
+        
+        const btn = document.createElement('button');
+        btn.className = 'btn-ghost';
+        btn.textContent = '✕ Remove';
+        btn.style.cssText = 'padding: 4px 8px; font-size: 0.9rem;';
+        btn.addEventListener('click', async () => {
+            await removeObsoletePart(pn);
+        });
+        
+        item.appendChild(info);
+        item.appendChild(btn);
+        frag.appendChild(item);
+    });
+    
+    obsoletePartsList.appendChild(frag);
+}
+
+async function removeObsoletePart(pn) {
+    if (!confirm(`Remove obsolete mapping for ${pn}?`)) return;
+    
+    try {
+        const res = await fetch(`/api/obsolete/${encodeURIComponent(pn)}`, {
+            method: 'DELETE'
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            obsoleteError.textContent = data.error || 'Error removing obsolete part';
+            obsoleteError.classList.remove('hidden');
+            return;
+        }
+        
+        delete state.obsoleteMap[pn];
+        renderObsoletePartsList();
+        showToast(`Obsolete part removed: ${pn}`);
+    } catch {
+        obsoleteError.textContent = 'Server error. Please try again.';
+        obsoleteError.classList.remove('hidden');
+    }
 }
 
 // ─── User Name ────────────────────────────────────────────────────────────────
@@ -450,6 +531,15 @@ async function loadPartsDictionary() {
             selectDictFilter.appendChild(opt);
         });
     } catch { /* silent — filter just won't populate */ }
+}
+
+// ─── Obsolete Parts ───────────────────────────────────────────────────────────
+async function loadObsoleteList() {
+    try {
+        const res = await fetch('/api/obsolete');
+        if (!res.ok) return;
+        state.obsoleteMap = await res.json(); // {part_number: replacement_part_number}
+    } catch { /* silent — if not available, just use empty map */ }
 }
 
 // ─── Truck Dropdown Helpers ───────────────────────────────────────────────────
@@ -718,12 +808,38 @@ function renderInventory(filter = '') {
         const orderContent = poMode
             ? `<input class="order-edit-input" type="number" value="${onOrder}" min="0" data-pn="${escapeAttr(item.part_number)}" aria-label="On order for ${escapeAttr(item.part_number)}">`
             : (onOrder > 0 ? onOrder : '&mdash;');
+        
+        // Obsolete badge (always visible)
+        const isObsolete = state.obsoleteMap.hasOwnProperty(item.part_number);
+        const replacementPn = isObsolete ? state.obsoleteMap[item.part_number] : '';
+        const obsoleteBadge = isObsolete 
+            ? `<span class="obsolete-badge" title="Obsolete - use ${replacementPn} instead">⚠️ OBSOLETE → ${escapeHtml(replacementPn)}</span>`
+            : '';
+        
+        // Coordinates display (inline editable)
+        const aisleVal = item.aisle || '';
+        const rackVal = item.rack || '';
+        const shelfVal = item.shelf || '';
+        const hasCoords = aisleVal || rackVal || shelfVal;
+        const coordsEditable = !hasCoords || poMode;
+        const coordinatesRow = `
+            <div class="part-coordinates">
+                <span class="coord-label">Loc</span>
+                <input type="text" class="coord-input" data-pn="${escapeAttr(item.part_number)}" data-field="aisle" value="${escapeAttr(aisleVal)}" placeholder="A" maxlength="3" ${coordsEditable ? '' : 'disabled'} aria-label="Aisle for ${escapeAttr(item.part_number)}">
+                <span class="coord-sep">−</span>
+                <input type="text" class="coord-input" data-pn="${escapeAttr(item.part_number)}" data-field="rack" value="${escapeAttr(rackVal)}" placeholder="1" maxlength="3" ${coordsEditable ? '' : 'disabled'} aria-label="Rack for ${escapeAttr(item.part_number)}">
+                <span class="coord-sep">−</span>
+                <input type="text" class="coord-input" data-pn="${escapeAttr(item.part_number)}" data-field="shelf" value="${escapeAttr(shelfVal)}" placeholder="2" maxlength="3" ${coordsEditable ? '' : 'disabled'} aria-label="Shelf for ${escapeAttr(item.part_number)}">
+            </div>`;
+        
         const card = document.createElement('div');
         card.className = `part-card${belowPar ? ' below-par' : ''}`;
         card.dataset.pn = escapeAttr(item.part_number);
         card.dataset.expanded = 'false';
         card.innerHTML = `
             <span class="part-pn">${escapeHtml(item.part_number)}</span>
+            ${obsoleteBadge}
+            ${coordinatesRow}
             <span class="part-desc">${escapeHtml(descLine)}</span>
             <span class="part-par"><span class="par-label">Par</span>${parContent}</span>
             <span class="part-order${orderClass}" data-pn="${escapeAttr(item.part_number)}">
@@ -868,7 +984,53 @@ function updateCardDisplay(pn, newQty, newOnOrder) {
     }
 }
 
-// ─── Direct Adjust (+ / - buttons) ───────────────────────────────────────────
+// ─── Coordinates Inline Save ─────────────────────────────────────────────────
+
+async function saveCoordinateField(input) {
+    const pn = input.dataset.pn;
+    const field = input.dataset.field;
+    const item = state.inventory.find(i => i.part_number === pn);
+    if (!item) return;
+    
+    const value = input.value.trim().toUpperCase();
+    const currentValue = item[field] || '';
+    
+    if (value === currentValue) return;
+    
+    // Validate: max 3 chars, alphanumeric + hyphen/underscore
+    const coordPattern = /^[a-zA-Z0-9\-_]{0,3}$/;
+    if (!coordPattern.test(value)) {
+        showToast('Coordinates must be max 3 chars (alphanumeric, -, _)', 3000);
+        input.value = currentValue;
+        return;
+    }
+    
+    input.disabled = true;
+    try {
+        const aisle = field === 'aisle' ? value : (item.aisle || '');
+        const rack = field === 'rack' ? value : (item.rack || '');
+        const shelf = field === 'shelf' ? value : (item.shelf || '');
+        
+        const res = await fetch(`/api/inventory/${encodeURIComponent(activeLocation())}/${encodeURIComponent(pn)}/coordinates`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ aisle, rack, shelf })
+        });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Error saving coordinates', 3000); input.value = currentValue; return; }
+        
+        item.aisle = aisle;
+        item.rack = rack;
+        item.shelf = shelf;
+        
+        showToast(`Coordinates saved`);
+    } catch {
+        showToast('Server error. Please try again.', 3000);
+        input.value = currentValue;
+    } finally {
+        input.disabled = false;
+    }
+}
 async function sendAdjust(part_number, action, quantity) {
     const res = await fetch(`/api/inventory/${encodeURIComponent(activeLocation())}/adjust`, {
         method: 'POST',
@@ -877,6 +1039,24 @@ async function sendAdjust(part_number, action, quantity) {
     });
     return res.json().then(data => ({ ok: res.ok, data }));
 }
+
+partsList.addEventListener('keydown', async e => {
+    if (e.key !== 'Enter') return;
+    
+    const coordInput = e.target.closest('.coord-input');
+    if (coordInput) {
+        e.preventDefault();
+        await saveCoordinateField(coordInput);
+        coordInput.blur();
+    }
+});
+
+partsList.addEventListener('blur', async e => {
+    const coordInput = e.target.closest('.coord-input');
+    if (coordInput) {
+        await saveCoordinateField(coordInput);
+    }
+}, true); // use capture phase for blur event
 
 partsList.addEventListener('click', async e => {
     // Expand/collapse full_description pane when clicking on part number or description
@@ -899,6 +1079,10 @@ partsList.addEventListener('click', async e => {
     const rcvBtn = e.target.closest('.btn-receive');
     if (rcvBtn) { await handleReceive(rcvBtn.dataset.pn, rcvBtn); return; }
 
+    // Coordinate input blur/change
+    const coordInput = e.target.closest('.coord-input');
+    if (coordInput) { await saveCoordinateField(coordInput); return; }
+
     // Transfer button
     const tfBtn = e.target.closest('.btn-transfer');
     if (tfBtn) { openTransferModal(tfBtn.dataset.pn); return; }
@@ -919,7 +1103,11 @@ partsList.addEventListener('click', async e => {
         item.quantity = data.quantity;
         if (data.on_order !== undefined) item.on_order = data.on_order;
         updateCardDisplay(pn, data.quantity, data.on_order);
-        showToast(`${action === 'add' ? '+1' : '-1'} ${pn} → ${data.quantity}`);
+        if (data.warning) {
+            showToast(data.warning, 4000, 'warning');
+        } else {
+            showToast(`${action === 'add' ? '+1' : '-1'} ${pn} → ${data.quantity}`);
+        }
     } catch {
         showToast('Server error. Please try again.', 3000);
     } finally {
@@ -961,7 +1149,11 @@ partsList.addEventListener('change', async e => {
         item.quantity = data.quantity;
         if (data.on_order !== undefined) item.on_order = data.on_order;
         updateCardDisplay(pn, data.quantity, data.on_order);
-        showToast(`${pn} → ${data.quantity} in stock`);
+        if (data.warning) {
+            showToast(data.warning, 4000, 'warning');
+        } else {
+            showToast(`${pn} → ${data.quantity} in stock`);
+        }
     } catch {
         showToast('Server error. Please try again.', 3000);
         input.value = item.quantity;
@@ -1078,6 +1270,8 @@ async function generateEssReorderCsv(locNames) {
     const headerRow = ['part_number', 'description', 'quantity_required'];
     const lines = [headerRow.map(csvEscape).join(',')];
     let totalParts = 0;
+    let substitutions = 0;
+    const obsoleteSubstitutions = []; // Track obsolete→replacement mappings per location
 
     for (const locName of locNames) {
         let inventory;
@@ -1100,7 +1294,33 @@ async function generateEssReorderCsv(locNames) {
         belowPar.forEach(item => {
             const onOrder = item.on_order || 0;
             const needed = getParLevel(item) - item.quantity - onOrder;
-            lines.push([item.part_number, getDescription(item), String(needed)].map(csvEscape).join(','));
+            
+            // Check if part is obsolete and auto-substitute replacement
+            let reorderPn = item.part_number;
+            let reorderDesc = getDescription(item);
+            if (state.obsoleteMap.hasOwnProperty(item.part_number)) {
+                reorderPn = state.obsoleteMap[item.part_number];
+                substitutions++;
+                const obsoletePar = getParLevel(item);
+                // Track for potential par level adjustment
+                if (obsoletePar > 0) {
+                    obsoleteSubstitutions.push({
+                        location: locName,
+                        obsoletePn: item.part_number,
+                        replacementPn: reorderPn,
+                        parValue: obsoletePar
+                    });
+                }
+                // Try to get description for replacement part if available
+                const replacementItem = state.inventory.find(i => i.part_number === reorderPn);
+                if (replacementItem) {
+                    reorderDesc = getDescription(replacementItem);
+                } else {
+                    reorderDesc = `${getDescription(item)} [← ${item.part_number}]`;
+                }
+            }
+            
+            lines.push([reorderPn, reorderDesc, String(needed)].map(csvEscape).join(','));
             totalParts++;
         });
     }
@@ -1115,7 +1335,66 @@ async function generateEssReorderCsv(locNames) {
     a.click();
     URL.revokeObjectURL(url);
     modalReorderSelect.classList.add('hidden');
-    showToast(`ES&S CSV downloaded (${totalParts} part${totalParts === 1 ? '' : 's'})`);
+    
+    const message = substitutions > 0
+        ? `ES&S CSV downloaded (${totalParts} part${totalParts === 1 ? '' : 's'}, ${substitutions} substituted)`
+        : `ES&S CSV downloaded (${totalParts} part${totalParts === 1 ? '' : 's'})`;
+    showToast(message);
+    
+    // If there were obsolete substitutions, prompt to adjust par levels
+    if (obsoleteSubstitutions.length > 0) {
+        const adjCount = obsoleteSubstitutions.length;
+        const confirmed = confirm(`Found ${adjCount} obsolete part${adjCount === 1 ? '' : 's'} being reordered.\n\nWould you like to:\n• Set their par levels to 0\n• Transfer par values to replacement parts\n\nThis adjustment will affect the ${locNames.length} selected location${locNames.length === 1 ? '' : 's'}.`);
+        
+        if (confirmed) {
+            await adjustObsoleteParLevels(obsoleteSubstitutions);
+        }
+    }
+}
+
+// ─── Adjust par levels for obsolete→replacement substitutions ────────────────
+async function adjustObsoleteParLevels(substitutions) {
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const sub of substitutions) {
+        try {
+            // Set obsolete part par to 0
+            await fetch(`/api/parts/${encodeURIComponent(sub.obsoletePn)}/par_level`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ par_level: 0, location: sub.location })
+            });
+
+            // Get current par level for replacement part and add obsolete's par value
+            const replacementItem = state.inventory.find(i => i.part_number === sub.replacementPn);
+            const currentReplacementPar = replacementItem ? getParLevel(replacementItem) : 0;
+            const newReplacementPar = currentReplacementPar + sub.parValue;
+
+            const replacementParRes = await fetch(`/api/parts/${encodeURIComponent(sub.replacementPn)}/par_level`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ par_level: newReplacementPar, location: sub.location })
+            });
+
+            if (replacementParRes.ok) {
+                successCount++;
+            } else {
+                errorCount++;
+            }
+        } catch (err) {
+            errorCount++;
+            console.error(`Error adjusting par for ${sub.obsoletePn} → ${sub.replacementPn}:`, err);
+        }
+    }
+
+    // Reload inventory to show updated par levels
+    await loadInventory();
+
+    const msg = errorCount > 0
+        ? `Par levels updated (${successCount} success, ${errorCount} failed)`
+        : `Par levels updated for all ${successCount} obsolete→replacement part${successCount === 1 ? '' : 's'}`;
+    showToast(msg);
 }
 
 // ─── Receive on-order item ────────────────────────────────────────────────────
@@ -2044,6 +2323,65 @@ btnManageHiddenClose.addEventListener('click', () => {
     modalManageHidden.classList.add('hidden');
 });
 
+btnAdminObsoleteParts.addEventListener('click', () => {
+    modalAdminChoice.classList.add('hidden');
+    openObsoletePartsModal();
+});
+
+btnObsoleteClose.addEventListener('click', () => {
+    modalObsoleteParts.classList.add('hidden');
+});
+
+btnAddObsolete.addEventListener('click', async () => {
+    const pn = inputObsoletePn.value.trim().toUpperCase();
+    const replacement = inputReplacementPn.value.trim().toUpperCase();
+    
+    if (!pn || !replacement) {
+        obsoleteError.textContent = 'Both part numbers required';
+        obsoleteError.classList.remove('hidden');
+        return;
+    }
+    
+    if (!/^\d{8}$/.test(pn) || !/^\d{8}$/.test(replacement)) {
+        obsoleteError.textContent = 'Part numbers must be exactly 8 digits';
+        obsoleteError.classList.remove('hidden');
+        return;
+    }
+    
+    if (pn === replacement) {
+        obsoleteError.textContent = 'Obsolete and replacement parts cannot be the same';
+        obsoleteError.classList.remove('hidden');
+        return;
+    }
+    
+    btnAddObsolete.disabled = true;
+    try {
+        const res = await fetch('/api/obsolete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ part_number: pn, replacement_part_number: replacement })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            obsoleteError.textContent = data.error || 'Error adding obsolete part';
+            obsoleteError.classList.remove('hidden');
+            return;
+        }
+        
+        state.obsoleteMap[pn] = replacement;
+        inputObsoletePn.value = '';
+        inputReplacementPn.value = '';
+        obsoleteError.classList.add('hidden');
+        renderObsoletePartsList();
+        showToast(`Obsolete part added: ${pn} → ${replacement}`);
+    } catch {
+        obsoleteError.textContent = 'Server error. Please try again.';
+        obsoleteError.classList.remove('hidden');
+    } finally {
+        btnAddObsolete.disabled = false;
+    }
+});
+
 // ─── Export Location Inventory (PO Entry Mode) ─────────────────────────────────
 btnExportLocationInventory.addEventListener('click', async () => {
     const loc = activeLocation();
@@ -2797,6 +3135,7 @@ function escapeAttr(str) {
 
     await loadLocations();
     await loadPartsDictionary();
+    await loadObsoleteList();
     updateHeaderHeight();
     window.addEventListener('resize', updateHeaderHeight);
 })();

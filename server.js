@@ -23,6 +23,7 @@ const TRANSACTIONS_FILE = path.join(DATA_DIR, 'transactions.csv');
 const TRANSACTIONS_DIR  = path.join(DATA_DIR, 'transactions');
 const HIDDEN_FILE    = path.join(DATA_DIR, 'hidden_locations.json');
 const CITY_GROUPS_FILE = path.join(DATA_DIR, 'city_groups.json');
+const OBSOLETE_FILE = path.join(DATA_DIR, 'obsolete.csv');
 const BACKUPS_DIR    = path.join(DATA_DIR, 'backups');
 const ORDERS_DIR     = path.join(DATA_DIR, 'orders');
 const UPLOAD_HISTORY_DIR = path.join(DATA_DIR, 'upload-history');
@@ -30,6 +31,9 @@ const Z10_MASTER_FILE = path.join(__dirname, 'Z10 Master List.csv');
 
 // Z10 Master List cache (loaded on startup)
 let z10DescriptionMap = {};
+
+// Obsolete parts map (loaded on startup): {part_number: replacement_part_number}
+let obsoleteMap = {};
 
 async function loadZ10Descriptions() {
     try {
@@ -51,6 +55,25 @@ async function loadZ10Descriptions() {
         });
     } catch (err) {
         console.warn(`❌ Could not load Z10 Master List: ${err.message}`);
+    }
+}
+
+async function loadObsoleteList() {
+    try {
+        const text = await fsp.readFile(OBSOLETE_FILE, 'utf8');
+        const { rows } = parseCSV(text);
+        obsoleteMap = {};
+        rows.forEach(row => {
+            if (row.part_number && row.replacement_part_number) {
+                obsoleteMap[row.part_number.trim()] = row.replacement_part_number.trim();
+            }
+        });
+        const count = Object.keys(obsoleteMap).length;
+        if (count > 0) {
+            console.log(`✅ Loaded ${count} obsolete parts`);
+        }
+    } catch (err) {
+        console.warn(`⚠️  Could not load obsolete parts list: ${err.message}`);
     }
 }
 
@@ -130,10 +153,12 @@ function parseCSV(text) {
 
 // ─── Validate Location CSV Headers ────────────────────────────────────────────
 // Ensures location CSVs have required columns: part_number, quantity, par_level
+// Coordinate columns (aisle, rack, shelf) are optional but will be auto-added if missing
 function validateLocationCSVHeaders(headers) {
     const required = ['part_number', 'quantity', 'par_level'];
     const hasAll = required.every(h => headers.includes(h));
-    return hasAll ? { valid: true, headers } : { valid: false, headers };
+    const needsCoordinates = !['aisle', 'rack', 'shelf'].every(h => headers.includes(h));
+    return hasAll ? { valid: true, headers, needsCoordinates } : { valid: false, headers };
 }
 
 // ─── Repair Malformed Location CSV ────────────────────────────────────────────
@@ -153,11 +178,41 @@ function repairLocationCSV(text) {
             // Assume row.par_level contains the par value from malformed file
             return { part_number: `UNKNOWN_${idx}`, quantity: 0, par_level: row.par_level || '0' };
         });
-        return rowsToCSV(['part_number', 'quantity', 'par_level'], repaired);
+        return rowsToCSV(['part_number', 'quantity', 'par_level', 'aisle', 'rack', 'shelf'], repaired);
     }
     
     // Fallback: create empty structure with required columns
-    return rowsToCSV(['part_number', 'quantity', 'par_level'], rows);
+    return rowsToCSV(['part_number', 'quantity', 'par_level', 'aisle', 'rack', 'shelf'], rows);
+}
+
+// ─── Auto-Migrate Location CSV to Add Coordinate Columns ────────────────────────
+// Adds aisle, rack, shelf columns if they're missing from an existing location CSV
+async function autoMigrateCoordinates(locFile, headers, rows) {
+    let needsMigration = false;
+    
+    if (!headers.includes('aisle')) {
+        headers.push('aisle');
+        needsMigration = true;
+    }
+    if (!headers.includes('rack')) {
+        headers.push('rack');
+        needsMigration = true;
+    }
+    if (!headers.includes('shelf')) {
+        headers.push('shelf');
+        needsMigration = true;
+    }
+    
+    if (needsMigration) {
+        try {
+            await executeWithWriteLock(locFile, async () => {
+                await fsp.writeFile(locFile, rowsToCSV(headers, rows), 'utf8');
+            });
+            console.log(`[InTracker] Auto-migrated coordinates for: ${path.basename(locFile)}`);
+        } catch (err) {
+            console.warn(`[InTracker] Failed to auto-migrate coordinates: ${err.message}`);
+        }
+    }
 }
 
 function splitCSVLine(line) {
@@ -216,6 +271,52 @@ function ordersMapToCSV(map) {
         .filter(([, q]) => q > 0)
         .map(([pn, q]) => ({ part_number: pn, quantity_on_order: q }));
     return rowsToCSV(['part_number', 'quantity_on_order'], rows);
+}
+
+// ─── File Locking System (prevent concurrent writes to same file) ──────────────
+// Maps file paths to promise chains for sequential write access
+const fileLocks = new Map();
+
+async function acquireWriteLock(filePath, timeoutMs = 30000) {
+    if (!fileLocks.has(filePath)) {
+        fileLocks.set(filePath, Promise.resolve());
+    }
+    
+    const currentLock = fileLocks.get(filePath);
+    let timeoutHandle;
+    let resolveTimeout;
+    
+    // Create a new promise for this lock holder
+    const newLock = new Promise((resolve) => {
+        currentLock.then(() => {
+            resolveTimeout = resolve;
+            // Set timeout to prevent deadlocks
+            timeoutHandle = setTimeout(() => {
+                resolve();
+            }, timeoutMs);
+        });
+    });
+    
+    // Store the new lock so next waiter waits for this one
+    fileLocks.set(filePath, newLock);
+    
+    // Wait for our turn
+    await currentLock;
+    
+    // Return a release function
+    return () => {
+        clearTimeout(timeoutHandle);
+        if (resolveTimeout) resolveTimeout();
+    };
+}
+
+async function executeWithWriteLock(filePath, asyncFn, timeoutMs = 30000) {
+    const release = await acquireWriteLock(filePath, timeoutMs);
+    try {
+        return await asyncFn();
+    } finally {
+        release();
+    }
 }
 
 async function ensureTransactionsFile() {
@@ -532,50 +633,56 @@ app.put('/api/parts/:partNumber/par_level', async (req, res) => {
             }
             
             const locFile = path.join(LOCATIONS_DIR, `${safe}.csv`);
-            try {
-                const locText = await fsp.readFile(locFile, 'utf8');
-                const { headers, rows } = parseCSV(locText);
-                
-                // Ensure par_level column exists
-                if (!headers.includes('par_level')) {
-                    headers.push('par_level');
+            
+            await executeWithWriteLock(locFile, async () => {
+                try {
+                    const locText = await fsp.readFile(locFile, 'utf8');
+                    const { headers, rows } = parseCSV(locText);
+                    
+                    // Ensure par_level column exists
+                    if (!headers.includes('par_level')) {
+                        headers.push('par_level');
+                    }
+                    
+                    // Find and update the part row, or add it if missing
+                    const idx = rows.findIndex(r => r.part_number === pn);
+                    if (idx === -1) {
+                        // Part not yet in this location, add it
+                        rows.push({ part_number: pn, quantity: 0, par_level: par });
+                    } else {
+                        rows[idx].par_level = par;
+                    }
+                    
+                    await fsp.writeFile(locFile, rowsToCSV(headers, rows), 'utf8');
+                    res.json({ part_number: pn, par_level: par, location: safe });
+                } catch (err) {
+                    res.status(500).json({ error: `Failed to update location par level: ${err.message}` });
                 }
-                
-                // Find and update the part row, or add it if missing
-                const idx = rows.findIndex(r => r.part_number === pn);
-                if (idx === -1) {
-                    // Part not yet in this location, add it
-                    rows.push({ part_number: pn, quantity: 0, par_level: par });
-                } else {
-                    rows[idx].par_level = par;
-                }
-                
-                await fsp.writeFile(locFile, rowsToCSV(headers, rows), 'utf8');
-                return res.json({ part_number: pn, par_level: par, location: safe });
-            } catch (err) {
-                return res.status(500).json({ error: `Failed to update location par level: ${err.message}` });
-            }
+            });
+            return;
         }
 
         // Global default: write to parts.csv
-        const text = await fsp.readFile(PARTS_FILE, 'utf8');
-        const { headers, rows } = parseCSV(text);
-        const pnCol = headers.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || headers[0];
-        const parKey = headers.find(h => /par_level|parlevel/i.test(h));
-        if (!parKey) return res.status(400).json({ error: 'par_level column not found in parts.csv' });
+        await executeWithWriteLock(PARTS_FILE, async () => {
+            const text = await fsp.readFile(PARTS_FILE, 'utf8');
+            const { headers, rows } = parseCSV(text);
+            const pnCol = headers.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || headers[0];
+            const parKey = headers.find(h => /par_level|parlevel/i.test(h));
+            if (!parKey) return res.status(400).json({ error: 'par_level column not found in parts.csv' });
 
-        const idx = rows.findIndex(r => r[pnCol] === pn);
-        if (idx === -1) {
-            const newRow = {};
-            headers.forEach(h => { newRow[h] = ''; });
-            newRow[pnCol] = pn;
-            newRow[parKey] = par;
-            rows.push(newRow);
-        } else {
-            rows[idx][parKey] = par;
-        }
-        await fsp.writeFile(PARTS_FILE, rowsToCSV(headers, rows), 'utf8');
-        res.json({ part_number: pn, par_level: par });
+            const idx = rows.findIndex(r => r[pnCol] === pn);
+            if (idx === -1) {
+                const newRow = {};
+                headers.forEach(h => { newRow[h] = ''; });
+                newRow[pnCol] = pn;
+                newRow[parKey] = par;
+                rows.push(newRow);
+            } else {
+                rows[idx][parKey] = par;
+            }
+            await fsp.writeFile(PARTS_FILE, rowsToCSV(headers, rows), 'utf8');
+            res.json({ part_number: pn, par_level: par });
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -596,6 +703,68 @@ app.get('/api/parts-dictionary', async (req, res) => {
     } catch (err) {
         if (err.code === 'ENOENT') return res.json([]); // no file = empty list
         res.status(500).json({ error: err.message });
+    }
+});
+
+// ─── API: Obsolete Parts ──────────────────────────────────────────────────────
+
+app.get('/api/obsolete', async (req, res) => {
+    res.json(obsoleteMap);
+});
+
+app.post('/api/obsolete', async (req, res) => {
+    try {
+        const { part_number, replacement_part_number } = req.body;
+        
+        if (!part_number || !replacement_part_number) {
+            return res.status(400).json({ error: 'Both part numbers required' });
+        }
+        
+        if (!/^\d{8}$/.test(part_number) || !/^\d{8}$/.test(replacement_part_number)) {
+            return res.status(400).json({ error: 'Part numbers must be exactly 8 digits' });
+        }
+        
+        if (part_number === replacement_part_number) {
+            return res.status(400).json({ error: 'Obsolete and replacement parts cannot be the same' });
+        }
+        
+        // Add to map
+        obsoleteMap[part_number] = replacement_part_number;
+        
+        // Append to CSV
+        const line = `${part_number},${replacement_part_number}\n`;
+        await fsp.appendFile(OBSOLETE_FILE, line, 'utf8');
+        
+        res.json({ success: true, message: `Obsolete part added: ${part_number} → ${replacement_part_number}` });
+    } catch (err) {
+        console.error('Error adding obsolete part:', err);
+        res.status(500).json({ error: 'Server error adding obsolete part' });
+    }
+});
+
+app.delete('/api/obsolete/:partNumber', async (req, res) => {
+    try {
+        const partNumber = req.params.partNumber;
+        
+        if (!obsoleteMap.hasOwnProperty(partNumber)) {
+            return res.status(404).json({ error: 'Obsolete part not found' });
+        }
+        
+        delete obsoleteMap[partNumber];
+        
+        // Rebuild CSV without this part
+        const lines = [];
+        lines.push('part_number,replacement_part_number');
+        Object.entries(obsoleteMap).forEach(([pn, replacement]) => {
+            lines.push(`${pn},${replacement}`);
+        });
+        
+        await fsp.writeFile(OBSOLETE_FILE, lines.join('\n') + (Object.keys(obsoleteMap).length > 0 ? '\n' : ''), 'utf8');
+        
+        res.json({ success: true, message: `Obsolete part removed: ${partNumber}` });
+    } catch (err) {
+        console.error('Error removing obsolete part:', err);
+        res.status(500).json({ error: 'Server error removing obsolete part' });
     }
 });
 
@@ -688,26 +857,29 @@ app.post('/api/locations', async (req, res) => {
         if (!safe) return res.status(400).json({ error: 'Invalid location name' });
 
         const locFile = path.join(LOCATIONS_DIR, `${safe}.csv`);
-        try {
-            await fsp.access(locFile);
-            return res.status(409).json({ error: 'Location already exists' });
-        } catch { /* doesn't exist, proceed */ }
+        
+        await executeWithWriteLock(locFile, async () => {
+            try {
+                await fsp.access(locFile);
+                return res.status(409).json({ error: 'Location already exists' });
+            } catch { /* doesn't exist, proceed */ }
 
-        // Build the new location CSV pre-populated from parts.csv at qty 0 and par_level 0
-        let csvContent = 'part_number,quantity,par_level\n';
-        try {
-            const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
-            const { headers, rows } = parseCSV(partsText);
-            // Detect the part number column (flexible name matching)
-            const pnCol = headers.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || headers[0];
-            rows.forEach(row => {
-                const pn = row[pnCol] || '';
-                if (pn) csvContent += `${pn},0,0\n`;
-            });
-        } catch { /* parts.csv missing — create empty location */ }
+            // Build the new location CSV pre-populated from parts.csv at qty 0 and par_level 0, with empty coordinates
+            let csvContent = 'part_number,quantity,par_level,aisle,rack,shelf\n';
+            try {
+                const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
+                const { headers, rows } = parseCSV(partsText);
+                // Detect the part number column (flexible name matching)
+                const pnCol = headers.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || headers[0];
+                rows.forEach(row => {
+                    const pn = row[pnCol] || '';
+                    if (pn) csvContent += `${pn},0,0,,,\n`;
+                });
+            } catch { /* parts.csv missing — create empty location */ }
 
-        await fsp.writeFile(locFile, csvContent, 'utf8');
-        res.json({ name: safe });
+            await fsp.writeFile(locFile, csvContent, 'utf8');
+            res.json({ name: safe });
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -729,12 +901,22 @@ app.get('/api/inventory/:location', async (req, res) => {
             invText = repairLocationCSV(invText);
             // Persist the repaired file
             try {
-                await fsp.writeFile(locFile, invText, 'utf8');
-                console.log(`[InTracker] Repaired and saved: ${safe}.csv`);
+                await executeWithWriteLock(locFile, async () => {
+                    await fsp.writeFile(locFile, invText, 'utf8');
+                    console.log(`[InTracker] Repaired and saved: ${safe}.csv`);
+                });
             } catch (writeErr) {
                 console.error(`[InTracker] Failed to save repaired CSV: ${writeErr.message}`);
             }
             parsedCSV = parseCSV(invText);
+        }
+        
+        // Auto-migrate to add coordinate columns if missing
+        if (headerValidation.needsCoordinates) {
+            const headers = [...parsedCSV.headers];
+            const rows = parsedCSV.rows;
+            await autoMigrateCoordinates(locFile, headers, rows);
+            parsedCSV.headers = headers;
         }
         
         const { rows: invRows } = parsedCSV;
@@ -778,40 +960,63 @@ app.get('/api/inventory/:location', async (req, res) => {
 
         // Persist the updated location CSV if anything changed
         if (locationDirty && partsPnList.length > 0) {
-            // Read current location CSV to get its headers and any existing par_levels
-            let locHeaders = ['part_number', 'quantity', 'par_level'];
-            const locParMap = {};
-            try {
-                const currentLocText = await fsp.readFile(locFile, 'utf8');
-                const { headers: curHeaders, rows: curRows } = parseCSV(currentLocText);
-                locHeaders = curHeaders;
-                if (!locHeaders.includes('par_level')) {
-                    locHeaders.push('par_level');
-                }
-                // Preserve existing par_levels
-                curRows.forEach(row => {
-                    locParMap[row.part_number] = row.par_level || '0';
-                });
-            } catch { /* file might not exist yet */ }
-            
-            const updatedRows = partsPnList
-                .filter(pn => pn in qtyMap)
-                .map(pn => ({
-                    part_number: pn,
-                    quantity: qtyMap[pn],
-                    par_level: locParMap[pn] || (partsMap[pn]?.par_level) || '0'
-                }));
-            // Also keep any rows not in parts.csv that still have qty (preserve unknown parts with stock)
-            for (const pn of Object.keys(qtyMap)) {
-                if (!partsMap[pn] && qtyMap[pn] > 0) {
-                    updatedRows.push({
+            await executeWithWriteLock(locFile, async () => {
+                // Read current location CSV to get its headers and any existing par_levels / coordinates
+                let locHeaders = ['part_number', 'quantity', 'par_level', 'aisle', 'rack', 'shelf'];
+                const locParMap = {};
+                const locCoordMap = {};
+                try {
+                    const currentLocText = await fsp.readFile(locFile, 'utf8');
+                    const { headers: curHeaders, rows: curRows } = parseCSV(currentLocText);
+                    locHeaders = curHeaders;
+                    if (!locHeaders.includes('par_level')) {
+                        locHeaders.push('par_level');
+                    }
+                    if (!locHeaders.includes('aisle')) {
+                        locHeaders.push('aisle');
+                    }
+                    if (!locHeaders.includes('rack')) {
+                        locHeaders.push('rack');
+                    }
+                    if (!locHeaders.includes('shelf')) {
+                        locHeaders.push('shelf');
+                    }
+                    // Preserve existing par_levels and coordinates
+                    curRows.forEach(row => {
+                        locParMap[row.part_number] = row.par_level || '0';
+                        locCoordMap[row.part_number] = {
+                            aisle: row.aisle || '',
+                            rack: row.rack || '',
+                            shelf: row.shelf || ''
+                        };
+                    });
+                } catch { /* file might not exist yet */ }
+                
+                const updatedRows = partsPnList
+                    .filter(pn => pn in qtyMap)
+                    .map(pn => ({
                         part_number: pn,
                         quantity: qtyMap[pn],
-                        par_level: locParMap[pn] || '0'
-                    });
+                        par_level: locParMap[pn] || (partsMap[pn]?.par_level) || '0',
+                        aisle: locCoordMap[pn]?.aisle || '',
+                        rack: locCoordMap[pn]?.rack || '',
+                        shelf: locCoordMap[pn]?.shelf || ''
+                    }));
+                // Also keep any rows not in parts.csv that still have qty (preserve unknown parts with stock)
+                for (const pn of Object.keys(qtyMap)) {
+                    if (!partsMap[pn] && qtyMap[pn] > 0) {
+                        updatedRows.push({
+                            part_number: pn,
+                            quantity: qtyMap[pn],
+                            par_level: locParMap[pn] || '0',
+                            aisle: locCoordMap[pn]?.aisle || '',
+                            rack: locCoordMap[pn]?.rack || '',
+                            shelf: locCoordMap[pn]?.shelf || ''
+                        });
+                    }
                 }
-            }
-            await fsp.writeFile(locFile, rowsToCSV(locHeaders, updatedRows), 'utf8');
+                await fsp.writeFile(locFile, rowsToCSV(locHeaders, updatedRows), 'utf8');
+            });
         }
 
         // Build response — preserve parts.csv order, unknown-but-stocked parts at end
@@ -860,6 +1065,22 @@ app.get('/api/inventory/:location', async (req, res) => {
                 // If part not in Z10 and no description in parts.csv, leave blank
                 base.description = '';
             }
+            // Add obsolete status and replacement info
+            base.is_obsolete = obsoleteMap.hasOwnProperty(pn) ? true : false;
+            if (base.is_obsolete) {
+                base.replacement_part_number = obsoleteMap[pn];
+            }
+            // Add coordinates from location CSV
+            const coordRow = invRows.find(r => r.part_number === pn);
+            if (coordRow) {
+                base.aisle = coordRow.aisle || '';
+                base.rack = coordRow.rack || '';
+                base.shelf = coordRow.shelf || '';
+            } else {
+                base.aisle = '';
+                base.rack = '';
+                base.shelf = '';
+            }
             return base;
         });
 
@@ -875,61 +1096,113 @@ app.get('/api/inventory/:location', async (req, res) => {
 app.post('/api/inventory/:location/adjust', async (req, res) => {
     try {
         const safe = req.params.location.replace(/[^a-zA-Z0-9 _\-]/g, '').replace(/\s+/g, '_');
-        const { part_number, action, quantity, user } = req.body;
+        const locFile = path.join(LOCATIONS_DIR, `${safe}.csv`);
+        
+        await executeWithWriteLock(locFile, async () => {
+            const { part_number, action, quantity, user } = req.body;
 
-        if (!user || !user.trim()) return res.status(400).json({ error: 'User name required' });
-        if (!part_number) return res.status(400).json({ error: 'Part number required' });
-        if (!['add', 'subtract'].includes(action)) return res.status(400).json({ error: 'Action must be add or subtract' });
-        const qty = parseInt(quantity, 10);
-        if (isNaN(qty) || qty <= 0) return res.status(400).json({ error: 'Quantity must be a positive integer' });
+            if (!user || !user.trim()) return res.status(400).json({ error: 'User name required' });
+            if (!part_number) return res.status(400).json({ error: 'Part number required' });
+            if (!['add', 'subtract'].includes(action)) return res.status(400).json({ error: 'Action must be add or subtract' });
+            const qty = parseInt(quantity, 10);
+            if (isNaN(qty) || qty <= 0) return res.status(400).json({ error: 'Quantity must be a positive integer' });
+
+            const invText = await fsp.readFile(locFile, 'utf8');
+            const { headers, rows } = parseCSV(invText);
+
+            const rowIdx = rows.findIndex(r => r.part_number === part_number);
+            if (rowIdx === -1) return res.status(404).json({ error: 'Part not found in this location' });
+
+            const current = parseInt(rows[rowIdx].quantity, 10) || 0;
+            let newQty;
+            if (action === 'add') {
+                newQty = current + qty;
+            } else {
+                if (current - qty < 0) {
+                    return res.status(400).json({ error: `Cannot subtract ${qty} from current stock of ${current}` });
+                }
+                newQty = current - qty;
+            }
+
+            rows[rowIdx].quantity = newQty;
+            const allHeaders = headers.length ? headers : ['part_number', 'quantity', 'par_level'];
+            await fsp.writeFile(locFile, rowsToCSV(allHeaders, rows), 'utf8');
+
+            // Append to transaction log
+            const ts = new Date().toISOString();
+            const logLine = `\n${ts},${escapeCSVField(user.trim())},${escapeCSVField(safe)},${escapeCSVField(part_number)},${action},${qty},${newQty}`;
+            await appendTransaction(safe, logLine);
+
+            // When adding stock, reduce on-order quantity accordingly
+            let newOnOrder = undefined;
+            if (action === 'add') {
+                try {
+                    const ordersFile = ordersFileForLocation(safe);
+                    await ensureOrdersFile(ordersFile);
+                    const ordersText = await fsp.readFile(ordersFile, 'utf8');
+                    const orderMap = parseOrdersCSV(ordersText);
+                    const onOrder = orderMap[part_number] || 0;
+                    if (onOrder > 0) {
+                        orderMap[part_number] = Math.max(0, onOrder - qty);
+                        newOnOrder = orderMap[part_number];
+                        await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
+                    } else {
+                        newOnOrder = 0;
+                    }
+                } catch { /* orders file not available */ }
+            }
+
+            // Check if part is obsolete and add warning if so
+            const response = { part_number, quantity: newQty, ...(newOnOrder !== undefined ? { on_order: newOnOrder } : {}) };
+            if (obsoleteMap.hasOwnProperty(part_number)) {
+                response.warning = `Part ${part_number} is obsolete. Using ${obsoleteMap[part_number]} in reorders.`;
+            }
+            res.json(response);
+        });
+    } catch (err) {
+        if (err.code === 'ENOENT') return res.status(404).json({ error: 'Location not found' });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ─── API: Coordinates ────────────────────────────────────────────────────────
+
+// PUT /api/inventory/:location/:partNumber/coordinates — update aisle/rack/shelf
+// Body: { aisle, rack, shelf }
+app.put('/api/inventory/:location/:partNumber/coordinates', async (req, res) => {
+    try {
+        const safe = req.params.location.replace(/[^a-zA-Z0-9 _\-]/g, '').replace(/\s+/g, '_');
+        const pn = req.params.partNumber;
+        const { aisle, rack, shelf } = req.body;
+
+        // Validate coordinates: max 3 chars each, alphanumeric + hyphen/underscore
+        const coordPattern = /^[a-zA-Z0-9\-_]{0,3}$/;
+        if (aisle && !coordPattern.test(aisle)) return res.status(400).json({ error: 'aisle must be max 3 chars (alphanumeric, -, _)' });
+        if (rack && !coordPattern.test(rack)) return res.status(400).json({ error: 'rack must be max 3 chars (alphanumeric, -, _)' });
+        if (shelf && !coordPattern.test(shelf)) return res.status(400).json({ error: 'shelf must be max 3 chars (alphanumeric, -, _)' });
 
         const locFile = path.join(LOCATIONS_DIR, `${safe}.csv`);
-        const invText = await fsp.readFile(locFile, 'utf8');
-        const { headers, rows } = parseCSV(invText);
+        
+        await executeWithWriteLock(locFile, async () => {
+            const invText = await fsp.readFile(locFile, 'utf8');
+            const { headers, rows } = parseCSV(invText);
 
-        const rowIdx = rows.findIndex(r => r.part_number === part_number);
-        if (rowIdx === -1) return res.status(404).json({ error: 'Part not found in this location' });
+            // Ensure coordinate columns exist
+            if (!headers.includes('aisle')) headers.push('aisle');
+            if (!headers.includes('rack')) headers.push('rack');
+            if (!headers.includes('shelf')) headers.push('shelf');
 
-        const current = parseInt(rows[rowIdx].quantity, 10) || 0;
-        let newQty;
-        if (action === 'add') {
-            newQty = current + qty;
-        } else {
-            if (current - qty < 0) {
-                return res.status(400).json({ error: `Cannot subtract ${qty} from current stock of ${current}` });
-            }
-            newQty = current - qty;
-        }
+            // Find the part row
+            const rowIdx = rows.findIndex(r => r.part_number === pn);
+            if (rowIdx === -1) return res.status(404).json({ error: 'Part not found in this location' });
 
-        rows[rowIdx].quantity = newQty;
-        const allHeaders = headers.length ? headers : ['part_number', 'quantity', 'par_level'];
-        await fsp.writeFile(locFile, rowsToCSV(allHeaders, rows), 'utf8');
+            rows[rowIdx].aisle = aisle || '';
+            rows[rowIdx].rack = rack || '';
+            rows[rowIdx].shelf = shelf || '';
 
-        // Append to transaction log
-        const ts = new Date().toISOString();
-        const logLine = `\n${ts},${escapeCSVField(user.trim())},${escapeCSVField(safe)},${escapeCSVField(part_number)},${action},${qty},${newQty}`;
-        await appendTransaction(safe, logLine);
-
-        // When adding stock, reduce on-order quantity accordingly
-        let newOnOrder = undefined;
-        if (action === 'add') {
-            try {
-                const ordersFile = ordersFileForLocation(safe);
-                await ensureOrdersFile(ordersFile);
-                const ordersText = await fsp.readFile(ordersFile, 'utf8');
-                const orderMap = parseOrdersCSV(ordersText);
-                const onOrder = orderMap[part_number] || 0;
-                if (onOrder > 0) {
-                    orderMap[part_number] = Math.max(0, onOrder - qty);
-                    newOnOrder = orderMap[part_number];
-                    await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
-                } else {
-                    newOnOrder = 0;
-                }
-            } catch { /* orders file not available */ }
-        }
-
-        res.json({ part_number, quantity: newQty, ...(newOnOrder !== undefined ? { on_order: newOnOrder } : {}) });
+            await fsp.writeFile(locFile, rowsToCSV(headers, rows), 'utf8');
+            res.json({ part_number: pn, aisle: aisle || '', rack: rack || '', shelf: shelf || '' });
+        });
     } catch (err) {
         if (err.code === 'ENOENT') return res.status(404).json({ error: 'Location not found' });
         res.status(500).json({ error: err.message });
@@ -1029,97 +1302,108 @@ app.post('/api/orders/upload', async (req, res) => {
         const PN_FORMAT = /^\d{8}$/;
 
         const ordersFile = ordersFileForLocation(safeLoc);
-        await ensureOrdersFile(ordersFile);
-        const existingText = await fsp.readFile(ordersFile, 'utf8');
+        const locFile = path.join(LOCATIONS_DIR, `${safeLoc}.csv`);
         
-        // Save upload history with the uploaded CSV and original filename
-        const uploadId = await saveUploadHistory(safeLoc, 'PO', csv, req.body.filename || 'upload.csv');
-        
-        const orderMap = parseOrdersCSV(existingText);
+        // Acquire locks on ordersFile and locFile in sorted order
+        const [lockFile1, lockFile2] = [ordersFile, locFile].sort();
+        const release1 = await acquireWriteLock(lockFile1);
+        const release2 = lockFile1 !== lockFile2 ? await acquireWriteLock(lockFile2) : () => {};
 
-        let added = 0, skipped = 0;
-        const newPns = [];
-        const newOrdersForParts = {}; // Track quantities for new parts to auto-set par
-        const partDescriptions = {}; // Track descriptions for new parts
-        rows.forEach(row => {
-            const pn  = (row[pnCol]  || '').trim();
-            const qty = parseInt(row[qtyCol], 10) || 0;
-            const desc = descCol ? (row[descCol] || '').trim() : '';
-            if (!PN_FORMAT.test(pn)) { skipped++; return; }
-            if (qty > 0) {
-                const isNew = !(pn in orderMap);
-                orderMap[pn] = (orderMap[pn] || 0) + qty;
-                added++;
-                if (isNew) {
-                    newPns.push(pn);
-                    newOrdersForParts[pn] = qty;
-                    if (desc && !partDescriptions[pn]) {
-                        partDescriptions[pn] = desc;
+        try {
+            await ensureOrdersFile(ordersFile);
+            const existingText = await fsp.readFile(ordersFile, 'utf8');
+            
+            // Save upload history with the uploaded CSV and original filename
+            const uploadId = await saveUploadHistory(safeLoc, 'PO', csv, req.body.filename || 'upload.csv');
+            
+            const orderMap = parseOrdersCSV(existingText);
+
+            let added = 0, skipped = 0;
+            const newPns = [];
+            const newOrdersForParts = {}; // Track quantities for new parts to auto-set par
+            const partDescriptions = {}; // Track descriptions for new parts
+            rows.forEach(row => {
+                const pn  = (row[pnCol]  || '').trim();
+                const qty = parseInt(row[qtyCol], 10) || 0;
+                const desc = descCol ? (row[descCol] || '').trim() : '';
+                if (!PN_FORMAT.test(pn)) { skipped++; return; }
+                if (qty > 0) {
+                    const isNew = !(pn in orderMap);
+                    orderMap[pn] = (orderMap[pn] || 0) + qty;
+                    added++;
+                    if (isNew) {
+                        newPns.push(pn);
+                        newOrdersForParts[pn] = qty;
+                        if (desc && !partDescriptions[pn]) {
+                            partDescriptions[pn] = desc;
+                        }
                     }
                 }
+            });
+
+            await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
+
+            // Auto-set par_level for new parts with no history at this location
+            if (newPns.length > 0) {
+                try {
+                    const locText = await fsp.readFile(locFile, 'utf8');
+                    const { headers, rows: locRows } = parseCSV(locText);
+                    
+                    // Ensure par_level column exists
+                    if (!headers.includes('par_level')) {
+                        headers.push('par_level');
+                    }
+                    
+                    let updated = false;
+                    // For each new part order, if it has no qty and no par at location, set par to order qty
+                    locRows.forEach(row => {
+                        if (newPns.includes(row.part_number)) {
+                            const hasNoQty = (parseInt(row.quantity, 10) || 0) === 0;
+                            const hasNoPar = !row.par_level || parseInt(row.par_level, 10) === 0;
+                            
+                            if (hasNoQty && hasNoPar) {
+                                row.par_level = newOrdersForParts[row.part_number];
+                                updated = true;
+                            }
+                        }
+                    });
+                    
+                    if (updated) {
+                        await fsp.writeFile(locFile, rowsToCSV(headers, locRows), 'utf8');
+                    }
+                } catch { /* location file may not exist yet - non-fatal */ }
             }
-        });
 
-        await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
-
-        // Auto-set par_level for new parts with no history at this location
-        if (newPns.length > 0) {
-            const locFile = path.join(LOCATIONS_DIR, `${safeLoc}.csv`);
-            try {
-                const locText = await fsp.readFile(locFile, 'utf8');
-                const { headers, rows: locRows } = parseCSV(locText);
-                
-                // Ensure par_level column exists
-                if (!headers.includes('par_level')) {
-                    headers.push('par_level');
-                }
-                
-                let updated = false;
-                // For each new part order, if it has no qty and no par at location, set par to order qty
-                locRows.forEach(row => {
-                    if (newPns.includes(row.part_number)) {
-                        const hasNoQty = (parseInt(row.quantity, 10) || 0) === 0;
-                        const hasNoPar = !row.par_level || parseInt(row.par_level, 10) === 0;
-                        
-                        if (hasNoQty && hasNoPar) {
-                            row.par_level = newOrdersForParts[row.part_number];
-                            updated = true;
+            // Add brand-new part numbers to master parts.csv
+            if (newPns.length > 0) {
+                try {
+                    const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
+                    const { headers: partsHeaders, rows: partsRows } = parseCSV(partsText);
+                    const partsPnCol = partsHeaders.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || partsHeaders[0];
+                    const partsDescCol = partsHeaders.find(h => /^description$/i.test(h));
+                    const existingPns = new Set(partsRows.map(r => (r[partsPnCol] || '').trim()));
+                    newPns.forEach(pn => {
+                        if (!existingPns.has(pn)) {
+                            const newRow = {};
+                            partsHeaders.forEach(h => { newRow[h] = ''; });
+                            newRow[partsPnCol] = pn;
+                            // Populate description if provided in upload CSV
+                            if (partsDescCol && partDescriptions[pn]) {
+                                newRow[partsDescCol] = partDescriptions[pn];
+                            }
+                            partsRows.push(newRow);
                         }
-                    }
-                });
-                
-                if (updated) {
-                    await fsp.writeFile(locFile, rowsToCSV(headers, locRows), 'utf8');
-                }
-            } catch { /* location file may not exist yet - non-fatal */ }
-        }
+                    });
+                    await fsp.writeFile(PARTS_FILE, rowsToCSV(partsHeaders, partsRows), 'utf8');
+                } catch { /* parts file not available — non-fatal */ }
+            }
 
-        // Add brand-new part numbers to master parts.csv
-        if (newPns.length > 0) {
-            try {
-                const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
-                const { headers: partsHeaders, rows: partsRows } = parseCSV(partsText);
-                const partsPnCol = partsHeaders.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || partsHeaders[0];
-                const partsDescCol = partsHeaders.find(h => /^description$/i.test(h));
-                const existingPns = new Set(partsRows.map(r => (r[partsPnCol] || '').trim()));
-                newPns.forEach(pn => {
-                    if (!existingPns.has(pn)) {
-                        const newRow = {};
-                        partsHeaders.forEach(h => { newRow[h] = ''; });
-                        newRow[partsPnCol] = pn;
-                        // Populate description if provided in upload CSV
-                        if (partsDescCol && partDescriptions[pn]) {
-                            newRow[partsDescCol] = partDescriptions[pn];
-                        }
-                        partsRows.push(newRow);
-                    }
-                });
-                await fsp.writeFile(PARTS_FILE, rowsToCSV(partsHeaders, partsRows), 'utf8');
-            } catch { /* parts file not available — non-fatal */ }
+            const total = Object.values(orderMap).filter(q => q > 0).length;
+            res.json({ merged: added, skipped, newToMaster: newPns.length, total, uploadId });
+        } finally {
+            release2();
+            release1();
         }
-
-        const total = Object.values(orderMap).filter(q => q > 0).length;
-        res.json({ merged: added, skipped, newToMaster: newPns.length, total, uploadId });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1159,104 +1443,114 @@ app.post('/api/inventory/:location/bulk-receive', async (req, res) => {
         });
         if (Object.keys(addMap).length === 0) return res.status(400).json({ error: 'No valid rows found in CSV (part numbers must be 8 digits)' });
 
-        // Read current location inventory for upload history
         const locFile = path.join(LOCATIONS_DIR, `${safe}.csv`);
-        const invText = await fsp.readFile(locFile, 'utf8');
-        
-        // Capture current on-order quantities before the upload (for rollback)
         const ordersFile = ordersFileForLocation(safe);
-        const ordersText = await fsp.readFile(ordersFile, 'utf8');
-        const beforeOrderState = parseOrdersCSV(ordersText);
         
-        // Save upload history with the uploaded CSV and original filename
-        const uploadId = await saveUploadHistory(safe, 'RecParts', csv, req.body.filename || 'upload.csv', beforeOrderState);
+        // Acquire locks on locFile and ordersFile in sorted order
+        const [lockFile1, lockFile2] = [locFile, ordersFile].sort();
+        const release1 = await acquireWriteLock(lockFile1);
+        const release2 = lockFile1 !== lockFile2 ? await acquireWriteLock(lockFile2) : () => {};
 
-        // Parse the inventory
-        const { headers: invHeaders, rows: invRows } = parseCSV(invText);
-        const allHeaders = invHeaders.length ? invHeaders : ['part_number', 'quantity'];
+        try {
+            // Read current location inventory for upload history
+            const invText = await fsp.readFile(locFile, 'utf8');
+            
+            // Capture current on-order quantities before the upload (for rollback)
+            const ordersText = await fsp.readFile(ordersFile, 'utf8');
+            const beforeOrderState = parseOrdersCSV(ordersText);
+            
+            // Save upload history with the uploaded CSV and original filename
+            const uploadId = await saveUploadHistory(safe, 'RecParts', csv, req.body.filename || 'upload.csv', beforeOrderState);
 
-        const ts = new Date().toISOString();
-        const logLines = [];
-        let received = 0;
-        const newParts = [];
-        const partDescriptions = {}; // Track descriptions from CSV
-        
-        // Build description map from CSV
-        const descCol = csvHeaders.find(h => /description|desc|desc\.|description\.|notes/i.test(h) && h !== pnCol);
-        csvRows.forEach(row => {
-            const pn = (row[pnCol] || '').trim();
-            const desc = descCol ? (row[descCol] || '').trim() : '';
-            if (PN_FORMAT.test(pn) && desc && !partDescriptions[pn]) {
-                partDescriptions[pn] = desc;
-            }
-        });
+            // Parse the inventory
+            const { headers: invHeaders, rows: invRows } = parseCSV(invText);
+            const allHeaders = invHeaders.length ? invHeaders : ['part_number', 'quantity'];
 
-        Object.entries(addMap).forEach(([pn, qty]) => {
-            // Gap 3: trim inventory-side part numbers before comparing
-            const rowIdx = invRows.findIndex(r => (r.part_number || '').trim() === pn);
-            if (rowIdx === -1) {
-                // New part — add as a new row in the location inventory
-                const newRow = {};
-                allHeaders.forEach(h => { newRow[h] = ''; });
-                newRow.part_number = pn;
-                newRow.quantity = qty;
-                invRows.push(newRow);
-                logLines.push(`\n${ts},${escapeCSVField(user.trim())},${escapeCSVField(safe)},${escapeCSVField(pn)},add,${qty},${qty}`);
-                newParts.push(pn);
+            const ts = new Date().toISOString();
+            const logLines = [];
+            let received = 0;
+            const newParts = [];
+            const partDescriptions = {}; // Track descriptions from CSV
+            
+            // Build description map from CSV
+            const descCol = csvHeaders.find(h => /description|desc|desc\.|description\.|notes/i.test(h) && h !== pnCol);
+            csvRows.forEach(row => {
+                const pn = (row[pnCol] || '').trim();
+                const desc = descCol ? (row[descCol] || '').trim() : '';
+                if (PN_FORMAT.test(pn) && desc && !partDescriptions[pn]) {
+                    partDescriptions[pn] = desc;
+                }
+            });
+
+            Object.entries(addMap).forEach(([pn, qty]) => {
+                // Gap 3: trim inventory-side part numbers before comparing
+                const rowIdx = invRows.findIndex(r => (r.part_number || '').trim() === pn);
+                if (rowIdx === -1) {
+                    // New part — add as a new row in the location inventory
+                    const newRow = {};
+                    allHeaders.forEach(h => { newRow[h] = ''; });
+                    newRow.part_number = pn;
+                    newRow.quantity = qty;
+                    invRows.push(newRow);
+                    logLines.push(`\n${ts},${escapeCSVField(user.trim())},${escapeCSVField(safe)},${escapeCSVField(pn)},add,${qty},${qty}`);
+                    newParts.push(pn);
+                    received++;
+                    return;
+                }
+                const current = parseInt(invRows[rowIdx].quantity, 10) || 0;
+                invRows[rowIdx].quantity = current + qty;
+                logLines.push(`\n${ts},${escapeCSVField(user.trim())},${escapeCSVField(safe)},${escapeCSVField(pn)},add,${qty},${current + qty}`);
                 received++;
-                return;
+            });
+
+            await fsp.writeFile(locFile, rowsToCSV(allHeaders, invRows), 'utf8');
+
+            if (logLines.length > 0) {
+                await appendTransaction(safe, logLines.join(''));
             }
-            const current = parseInt(invRows[rowIdx].quantity, 10) || 0;
-            invRows[rowIdx].quantity = current + qty;
-            logLines.push(`\n${ts},${escapeCSVField(user.trim())},${escapeCSVField(safe)},${escapeCSVField(pn)},add,${qty},${current + qty}`);
-            received++;
-        });
 
-        await fsp.writeFile(locFile, rowsToCSV(allHeaders, invRows), 'utf8');
-
-        if (logLines.length > 0) {
-            await appendTransaction(safe, logLines.join(''));
-        }
-
-        // Add new parts to master parts.csv
-        if (newParts.length > 0) {
-            try {
-                const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
-                const { headers: partsHeaders, rows: partsRows } = parseCSV(partsText);
-                const partsPnCol = partsHeaders.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || partsHeaders[0];
-                const partsDescCol = partsHeaders.find(h => /^description$/i.test(h));
-                const existingPns = new Set(partsRows.map(r => (r[partsPnCol] || '').trim()));
-                newParts.forEach(pn => {
-                    if (!existingPns.has(pn)) {
-                        const newRow = {};
-                        partsHeaders.forEach(h => { newRow[h] = ''; });
-                        newRow[partsPnCol] = pn;
-                        // Populate description if provided in upload CSV
-                        if (partsDescCol && partDescriptions[pn]) {
-                            newRow[partsDescCol] = partDescriptions[pn];
+            // Add new parts to master parts.csv
+            if (newParts.length > 0) {
+                try {
+                    const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
+                    const { headers: partsHeaders, rows: partsRows } = parseCSV(partsText);
+                    const partsPnCol = partsHeaders.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || partsHeaders[0];
+                    const partsDescCol = partsHeaders.find(h => /^description$/i.test(h));
+                    const existingPns = new Set(partsRows.map(r => (r[partsPnCol] || '').trim()));
+                    newParts.forEach(pn => {
+                        if (!existingPns.has(pn)) {
+                            const newRow = {};
+                            partsHeaders.forEach(h => { newRow[h] = ''; });
+                            newRow[partsPnCol] = pn;
+                            // Populate description if provided in upload CSV
+                            if (partsDescCol && partDescriptions[pn]) {
+                                newRow[partsDescCol] = partDescriptions[pn];
+                            }
+                            partsRows.push(newRow);
                         }
-                        partsRows.push(newRow);
-                    }
-                });
-                await fsp.writeFile(PARTS_FILE, rowsToCSV(partsHeaders, partsRows), 'utf8');
-            } catch { /* parts file not available — non-fatal */ }
-        }
+                    });
+                    await fsp.writeFile(PARTS_FILE, rowsToCSV(partsHeaders, partsRows), 'utf8');
+                } catch { /* parts file not available — non-fatal */ }
+            }
 
-        // Decrement on-order quantities for received parts (per-location)
-        if (received > 0) {
-            try {
-                const ordersFile = ordersFileForLocation(safe);
-                await ensureOrdersFile(ordersFile);
-                const ordersText = await fsp.readFile(ordersFile, 'utf8');
-                const orderMap = parseOrdersCSV(ordersText);
-                Object.entries(addMap).forEach(([pn, qty]) => {
-                    if (orderMap[pn] > 0) orderMap[pn] = Math.max(0, orderMap[pn] - qty);
-                });
-                await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
-            } catch { /* orders file not available */ }
-        }
+            // Decrement on-order quantities for received parts (per-location)
+            if (received > 0) {
+                try {
+                    await ensureOrdersFile(ordersFile);
+                    const ordersText = await fsp.readFile(ordersFile, 'utf8');
+                    const orderMap = parseOrdersCSV(ordersText);
+                    Object.entries(addMap).forEach(([pn, qty]) => {
+                        if (orderMap[pn] > 0) orderMap[pn] = Math.max(0, orderMap[pn] - qty);
+                    });
+                    await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
+                } catch { /* orders file not available */ }
+            }
 
-        res.json({ received, skipped, newToMaster: newParts.length, uploadId });
+            res.json({ received, skipped, newToMaster: newParts.length, uploadId });
+        } finally {
+            release2();
+            release1();
+        }
     } catch (err) {
         if (err.code === 'ENOENT') return res.status(404).json({ error: 'Location not found' });
         res.status(500).json({ error: err.message });
@@ -1274,12 +1568,15 @@ app.put('/api/orders/:partNumber', async (req, res) => {
         if (!safeLoc) return res.status(400).json({ error: 'location required' });
 
         const ordersFile = ordersFileForLocation(safeLoc);
-        await ensureOrdersFile(ordersFile);
-        const text = await fsp.readFile(ordersFile, 'utf8');
-        const orderMap = parseOrdersCSV(text);
-        orderMap[pn] = qty;
-        await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
-        res.json({ part_number: pn, quantity_on_order: qty });
+        
+        await executeWithWriteLock(ordersFile, async () => {
+            await ensureOrdersFile(ordersFile);
+            const text = await fsp.readFile(ordersFile, 'utf8');
+            const orderMap = parseOrdersCSV(text);
+            orderMap[pn] = qty;
+            await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
+            res.json({ part_number: pn, quantity_on_order: qty });
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1296,33 +1593,44 @@ app.post('/api/orders/:partNumber/receive', async (req, res) => {
         const safe = location.replace(/[^a-zA-Z0-9_\-]/g, '');
 
         const ordersFile = ordersFileForLocation(safe);
-        await ensureOrdersFile(ordersFile);
-        const ordersText = await fsp.readFile(ordersFile, 'utf8');
-        const orderMap = parseOrdersCSV(ordersText);
-
-        const onOrderQty = orderMap[pn] || 0;
-        if (onOrderQty === 0) return res.status(400).json({ error: 'No quantity on order for this part' });
-
         const locFile = path.join(LOCATIONS_DIR, `${safe}.csv`);
-        const invText = await fsp.readFile(locFile, 'utf8');
-        const { headers, rows } = parseCSV(invText);
+        
+        // Acquire locks on ordersFile and locFile in sorted order
+        const [lockFile1, lockFile2] = [ordersFile, locFile].sort();
+        const release1 = await acquireWriteLock(lockFile1);
+        const release2 = lockFile1 !== lockFile2 ? await acquireWriteLock(lockFile2) : () => {};
 
-        const rowIdx = rows.findIndex(r => r.part_number === pn);
-        if (rowIdx === -1) return res.status(404).json({ error: 'Part not found in this location' });
+        try {
+            await ensureOrdersFile(ordersFile);
+            const ordersText = await fsp.readFile(ordersFile, 'utf8');
+            const orderMap = parseOrdersCSV(ordersText);
 
-        const current = parseInt(rows[rowIdx].quantity, 10) || 0;
-        const newQty  = current + onOrderQty;
-        rows[rowIdx].quantity = newQty;
-        await fsp.writeFile(locFile, rowsToCSV(headers.length ? headers : ['part_number', 'quantity'], rows), 'utf8');
+            const onOrderQty = orderMap[pn] || 0;
+            if (onOrderQty === 0) return res.status(400).json({ error: 'No quantity on order for this part' });
 
-        delete orderMap[pn];
-        await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
+            const invText = await fsp.readFile(locFile, 'utf8');
+            const { headers, rows } = parseCSV(invText);
 
-        const ts = new Date().toISOString();
-        await appendTransaction(safe,
-            `\n${ts},${escapeCSVField(user.trim())},${escapeCSVField(safe)},${escapeCSVField(pn)},receive,${onOrderQty},${newQty}`);
+            const rowIdx = rows.findIndex(r => r.part_number === pn);
+            if (rowIdx === -1) return res.status(404).json({ error: 'Part not found in this location' });
 
-        res.json({ part_number: pn, quantity: newQty, quantity_on_order: 0, received: onOrderQty });
+            const current = parseInt(rows[rowIdx].quantity, 10) || 0;
+            const newQty  = current + onOrderQty;
+            rows[rowIdx].quantity = newQty;
+            await fsp.writeFile(locFile, rowsToCSV(headers.length ? headers : ['part_number', 'quantity'], rows), 'utf8');
+
+            delete orderMap[pn];
+            await fsp.writeFile(ordersFile, ordersMapToCSV(orderMap), 'utf8');
+
+            const ts = new Date().toISOString();
+            await appendTransaction(safe,
+                `\n${ts},${escapeCSVField(user.trim())},${escapeCSVField(safe)},${escapeCSVField(pn)},receive,${onOrderQty},${newQty}`);
+
+            res.json({ part_number: pn, quantity: newQty, quantity_on_order: 0, received: onOrderQty });
+        } finally {
+            release2();
+            release1();
+        }
     } catch (err) {
         if (err.code === 'ENOENT') return res.status(404).json({ error: 'Location not found' });
         res.status(500).json({ error: err.message });
@@ -1344,12 +1652,12 @@ app.get('/api/truck/:username', async (req, res) => {
         try {
             await fsp.access(locFile);
         } catch {
-            let csvContent = 'part_number,quantity\n';
+            let csvContent = 'part_number,quantity,aisle,rack,shelf\n';
             try {
                 const partsText = await fsp.readFile(PARTS_FILE, 'utf8');
                 const { headers, rows } = parseCSV(partsText);
                 const pnCol = headers.find(h => /part.?num|part.?no|partno|\bpn\b|\bsku\b/i.test(h)) || headers[0];
-                rows.forEach(row => { const pn = row[pnCol] || ''; if (pn) csvContent += `${pn},0\n`; });
+                rows.forEach(row => { const pn = row[pnCol] || ''; if (pn) csvContent += `${pn},0,,,\n`; });
             } catch {}
             await fsp.writeFile(locFile, csvContent, 'utf8');
             created = true;
@@ -1380,44 +1688,54 @@ app.post('/api/transfer', async (req, res) => {
         const fromFile = path.join(LOCATIONS_DIR, `${safeFrom}.csv`);
         const toFile   = path.join(LOCATIONS_DIR, `${safeTo}.csv`);
 
-        const fromText = await fsp.readFile(fromFile, 'utf8');
-        const { headers: fromHeaders, rows: fromRows } = parseCSV(fromText);
-        const toText = await fsp.readFile(toFile, 'utf8');
-        const { headers: toHeaders, rows: toRows } = parseCSV(toText);
+        // Acquire locks on both files in sorted order to prevent deadlocks
+        const [lockFile1, lockFile2] = [fromFile, toFile].sort();
+        const release1 = await acquireWriteLock(lockFile1);
+        const release2 = lockFile1 !== lockFile2 ? await acquireWriteLock(lockFile2) : () => {};
 
-        const fromIdx = fromRows.findIndex(r => r.part_number === part_number);
-        if (fromIdx === -1) return res.status(404).json({ error: 'Part not found in source location' });
+        try {
+            const fromText = await fsp.readFile(fromFile, 'utf8');
+            const { headers: fromHeaders, rows: fromRows } = parseCSV(fromText);
+            const toText = await fsp.readFile(toFile, 'utf8');
+            const { headers: toHeaders, rows: toRows } = parseCSV(toText);
 
-        const fromCurrent = parseInt(fromRows[fromIdx].quantity, 10) || 0;
-        if (fromCurrent < qty) return res.status(400).json({ error: `Cannot transfer ${qty}: source only has ${fromCurrent}` });
+            const fromIdx = fromRows.findIndex(r => r.part_number === part_number);
+            if (fromIdx === -1) return res.status(404).json({ error: 'Part not found in source location' });
 
-        const newFromQty = fromCurrent - qty;
-        fromRows[fromIdx].quantity = newFromQty;
+            const fromCurrent = parseInt(fromRows[fromIdx].quantity, 10) || 0;
+            if (fromCurrent < qty) return res.status(400).json({ error: `Cannot transfer ${qty}: source only has ${fromCurrent}` });
 
-        const toIdx = toRows.findIndex(r => r.part_number === part_number);
-        let newToQty;
-        if (toIdx >= 0) {
-            newToQty = (parseInt(toRows[toIdx].quantity, 10) || 0) + qty;
-            toRows[toIdx].quantity = newToQty;
-        } else {
-            newToQty = qty;
-            toRows.push({ part_number, quantity: newToQty });
+            const newFromQty = fromCurrent - qty;
+            fromRows[fromIdx].quantity = newFromQty;
+
+            const toIdx = toRows.findIndex(r => r.part_number === part_number);
+            let newToQty;
+            if (toIdx >= 0) {
+                newToQty = (parseInt(toRows[toIdx].quantity, 10) || 0) + qty;
+                toRows[toIdx].quantity = newToQty;
+            } else {
+                newToQty = qty;
+                toRows.push({ part_number, quantity: newToQty });
+            }
+
+            await fsp.writeFile(fromFile, rowsToCSV(fromHeaders.length ? fromHeaders : ['part_number', 'quantity'], fromRows), 'utf8');
+            await fsp.writeFile(toFile,   rowsToCSV(toHeaders.length   ? toHeaders   : ['part_number', 'quantity'], toRows),   'utf8');
+
+            const ts = new Date().toISOString();
+            const u  = escapeCSVField(user.trim());
+            const pn = escapeCSVField(part_number);
+            await appendTransaction(safeFrom, `\n${ts},${u},${escapeCSVField(safeFrom)},${pn},transfer-out,${qty},${newFromQty}`);
+            await appendTransaction(safeTo,   `\n${ts},${u},${escapeCSVField(safeTo)},${pn},transfer-in,${qty},${newToQty}`);
+
+            res.json({
+                part_number,
+                from: { location: safeFrom, quantity: newFromQty },
+                to:   { location: safeTo,   quantity: newToQty }
+            });
+        } finally {
+            release2();
+            release1();
         }
-
-        await fsp.writeFile(fromFile, rowsToCSV(fromHeaders.length ? fromHeaders : ['part_number', 'quantity'], fromRows), 'utf8');
-        await fsp.writeFile(toFile,   rowsToCSV(toHeaders.length   ? toHeaders   : ['part_number', 'quantity'], toRows),   'utf8');
-
-        const ts = new Date().toISOString();
-        const u  = escapeCSVField(user.trim());
-        const pn = escapeCSVField(part_number);
-        await appendTransaction(safeFrom, `\n${ts},${u},${escapeCSVField(safeFrom)},${pn},transfer-out,${qty},${newFromQty}`);
-        await appendTransaction(safeTo,   `\n${ts},${u},${escapeCSVField(safeTo)},${pn},transfer-in,${qty},${newToQty}`);
-
-        res.json({
-            part_number,
-            from: { location: safeFrom, quantity: newFromQty },
-            to:   { location: safeTo,   quantity: newToQty }
-        });
     } catch (err) {
         if (err.code === 'ENOENT') return res.status(404).json({ error: 'Location not found' });
         res.status(500).json({ error: err.message });
@@ -1516,6 +1834,7 @@ app.post('/api/reverse-upload/:location/:uploadId', async (req, res) => {
 scheduleHourlyBackup();
 migrateTransactionsToPerLocation();
 loadZ10Descriptions();
+loadObsoleteList();
 
 app.listen(PORT, () => {
     const env = process.env.DATA_DIR ? 'DEVELOPMENT' : 'PRODUCTION';

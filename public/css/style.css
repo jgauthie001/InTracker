@@ -343,10 +343,13 @@ h1 {
     font-size: 0.82rem;
     color: var(--text-dim);
     grid-column: 1;
-    grid-row: 2;
+    grid-row: 3;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    padding-top: 6px;
+    margin-top: 6px;
+    border-top: 1px solid var(--border);
 }
 
 .part-par {
@@ -516,6 +519,90 @@ h1 {
     line-height: 1.4;
     white-space: pre-wrap;
     word-break: break-word;
+}
+
+/* ─── Obsolete Badge ──────────────────────────────────────────────────────────── */
+.obsolete-badge {
+    grid-column: 1 / -1;
+    display: inline-block;
+    background: rgba(231, 76, 60, 0.15);
+    border: 1px solid rgba(231, 76, 60, 0.5);
+    color: #e74c3c;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 4px 8px;
+    border-radius: 4px;
+    margin-bottom: 6px;
+    white-space: nowrap;
+}
+
+/* ─── Coordinates ──────────────────────────────────────────────────────────────── */
+.part-coordinates {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.75rem;
+}
+
+.coord-label {
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+    color: var(--text-dim);
+    min-width: 24px;
+}
+
+.coord-input {
+    width: 40px;
+    max-width: 40px;
+    padding: 4px 6px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text);
+    font-size: 0.85rem;
+    font-family: monospace;
+    text-transform: uppercase;
+    text-align: center;
+}
+
+.coord-input:focus {
+    border-color: var(--accent);
+    outline: none;
+    background: var(--surface);
+}
+
+.coord-input:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.coord-sep {
+    color: var(--text-dim);
+    font-weight: 600;
+    user-select: none;
+}
+
+/* ─── Coordinate Input Fields in Modal ─────────────────────────────────────── */
+.coord-input-field {
+    width: 100%;
+    max-width: 100px;
+    padding: 6px 8px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 0.9rem;
+    font-family: monospace;
+    text-transform: uppercase;
+}
+
+.coord-input-field:focus {
+    border-color: var(--accent);
+    outline: none;
 }
 
 .part-full-description.hidden {
@@ -883,6 +970,60 @@ h1 {
     gap: 10px;
 }
 
+.modal-content {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    width: 90%;
+    max-width: 400px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.modal-content h3 {
+    font-size: 1rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+}
+
+.modal-content input,
+.modal-content textarea {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    padding: 8px 12px;
+    font-size: 0.9rem;
+}
+
+.modal-content input:focus,
+.modal-content textarea:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+
+.modal-content button {
+    padding: 8px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text);
+    cursor: pointer;
+    font-weight: 600;
+    transition: opacity 0.15s;
+}
+
+.modal-content button.btn-save-coords {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+
+.modal-content button.btn-save-coords:disabled { opacity: 0.5; pointer-events: none; }
+.modal-content button:active { opacity: 0.7; }
+
 /* ─── Barcode Scanner Modal ─────────────────────────────────────────────────── */
 .barcode-mode-selector {
     display: flex;
@@ -1222,6 +1363,12 @@ h1 {
 }
 
 .toast.hidden { opacity: 0; }
+
+.toast.warning {
+    background: rgba(243, 156, 18, 0.1);
+    border-color: rgba(243, 156, 18, 0.5);
+    color: #f39c12;
+}
 
 .hidden { display: none !important; }
 
