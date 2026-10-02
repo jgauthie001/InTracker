@@ -955,7 +955,9 @@ function applyOrderVisibility() {
     btnExitPo.classList.toggle('hidden', state.hideOrder);
     btnUploadHistory.classList.toggle('hidden', state.hideOrder);
     const poBar = document.getElementById('po-action-bar');
-    if (poBar) poBar.classList.toggle('hidden', state.hideOrder || state.isTruckMode);
+    // Show po-action-bar if: (1) in PO mode, OR (2) at truck location (truck locations always show reorder/inventory buttons)
+    const isTruckLoc = activeLocation().startsWith('truck_');
+    if (poBar) poBar.classList.toggle('hidden', state.hideOrder && !isTruckLoc);
     // Hide Rec Parts button at truck locations
     if (btnRecParts) btnRecParts.classList.toggle('hidden', state.location.startsWith('truck_'));
     const hdr = document.getElementById('parts-list-header');
@@ -1448,7 +1450,7 @@ function setLocInfo(locName, info) {
 
 btnReorder.addEventListener('click', () => {
     const locOptions = [...selectLocation.options].filter(o =>
-        o.value && !o.value.startsWith('truck_') && !o.dataset.truck
+        o.value  // Include all locations (including truck_)
     );
     if (locOptions.length === 0) {
         showToast('No locations available', 3000);
