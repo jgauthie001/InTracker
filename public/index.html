@@ -13,7 +13,10 @@
     <!-- Header -->
     <header id="app-header">
         <div class="header-top">
-            <h1 id="app-title" title="Tap to toggle PO Entry mode">InTrack</h1>
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <h1 id="app-title" title="Tap to toggle PO Entry mode">InTrack</h1>
+                <span id="truck-mode-badge" class="truck-mode-badge hidden" style="background-color: #ff9800; color: white; padding: 4px 12px; border-radius: 16px; font-size: 12px; font-weight: bold; white-space: nowrap;">🚛 TRUCK MODE</span>
+            </div>
             <div class="header-actions">
                 <button id="btn-exit-po" class="btn-exit-po hidden">Exit PO Entry</button>
                 <button id="btn-truck-stock" class="btn-icon" title="My Truck Stock" disabled>&#128666; Truck</button>
@@ -229,6 +232,7 @@
                 <button id="btn-admin-manage-hidden" class="btn-primary">&#128065; Manage Hidden Locations</button>
                 <button id="btn-admin-city-groups" class="btn-primary">&#127968; City Groups</button>
                 <button id="btn-admin-truck-manager" class="btn-primary">&#128666; Truck Mode Management</button>
+                <button id="btn-admin-upload-truck-par" class="btn-primary">🚛 Upload Truck Par Levels</button>
                 <button id="btn-admin-obsolete-parts" class="btn-primary">⚠️ Manage Obsolete Parts</button>
                 <button id="btn-admin-cancel" class="btn-ghost">Cancel</button>
             </div>
@@ -240,10 +244,40 @@
         <div class="modal-box">
             <div class="modal-title">&#128666; Truck Mode Management</div>
             <p class="modal-hint">Select users who should see truck mode in their menu:</p>
+            <div style="margin: 10px 0;">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="checkbox" id="truck-show-all-users" style="cursor: pointer;">
+                    <span>Show all users (including misassigned)</span>
+                </label>
+            </div>
             <div id="truck-users-list" class="hidden-loc-list"></div>
             <div id="truck-manager-error" class="modal-error hidden"></div>
             <div class="modal-actions" style="margin-top:14px">
                 <button id="btn-truck-manager-close" class="btn-primary">Done</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Upload Truck Par Levels Modal -->
+    <div id="modal-upload-truck-par" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-box">
+            <div class="modal-title">🚛 Upload Truck Par Levels</div>
+            <p class="modal-hint">Upload a CSV file with part numbers and par levels to update all truck locations in selected city groups.</p>
+            <div style="margin: 15px 0;">
+                <label style="display: block; margin-bottom: 10px; font-weight: 500;">City Groups:</label>
+                <div id="truck-par-city-groups" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 15px; max-height: 150px; overflow-y: auto;"></div>
+                <label style="display: block; margin-bottom: 8px; font-weight: 500;">CSV File (part_number, par_level):</label>
+                <input type="file" id="input-truck-par-csv" accept=".csv" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius);">
+            </div>
+            <div id="truck-par-preview" style="margin: 15px 0; padding: 10px; background-color: var(--surface2); border-radius: var(--radius); max-height: 150px; overflow-y: auto; display: none;">
+                <div style="font-weight: 500; margin-bottom: 8px;">Preview:</div>
+                <div id="truck-par-preview-content" style="font-size: 0.85em; max-height: 120px; overflow-y: auto;"></div>
+            </div>
+            <div id="truck-par-error" class="modal-error hidden" style="margin: 10px 0;"></div>
+            <div id="truck-par-success" style="color: var(--add); margin: 10px 0; display: none;"></div>
+            <div class="modal-actions" style="margin-top: 15px;">
+                <button id="btn-truck-par-upload" class="btn-primary">Upload</button>
+                <button id="btn-truck-par-cancel" class="btn-ghost">Cancel</button>
             </div>
         </div>
     </div>

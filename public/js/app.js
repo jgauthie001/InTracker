@@ -21,6 +21,7 @@ const state = {
     isTruckMode: false,
     locInventory: [],
     truckInventory: [],
+    truckUsers: [], // Cached truck users from server
     hideOrder: true,
     truckTransferDirection: 'to-truck',  // 'to-truck' or 'from-truck'
     obsoleteMap: {}  // {part_number: replacement_part_number}
@@ -176,6 +177,20 @@ const truckUsersList            = $('truck-users-list');
 const btnTruckManagerClose      = $('btn-truck-manager-close');
 const btnAdminTruckManager      = $('btn-admin-truck-manager');
 const truckManagerError         = $('truck-manager-error');
+const truckShowAllUsers         = $('truck-show-all-users');
+const truckModeBadge            = $('truck-mode-badge');
+
+// Upload truck par levels modal
+const modalUploadTruckPar       = $('modal-upload-truck-par');
+const btnAdminUploadTruckPar    = $('btn-admin-upload-truck-par');
+const inputTruckParCsv          = $('input-truck-par-csv');
+const truckParCityGroups        = $('truck-par-city-groups');
+const truckParPreview           = $('truck-par-preview');
+const truckParPreviewContent    = $('truck-par-preview-content');
+const truckParError             = $('truck-par-error');
+const truckParSuccess           = $('truck-par-success');
+const btnTruckParUpload         = $('btn-truck-par-upload');
+const btnTruckParCancel         = $('btn-truck-par-cancel');
 
 // Truck transfer scanner modal
 const modalTruckTransferScanner = $('modal-truck-transfer-scanner');
@@ -241,86 +256,237 @@ function showView(view) {
 }
 
 // ─── Truck Mode User Preferences ──────────────────────────────────────────────
-function getTruckModeUsers() {
-    try { 
-        return JSON.parse(localStorage.getItem('intracker_truck_users') || '[]'); 
-    } catch { 
-        return []; 
+// ─── Truck Mode: User Management (Server-Side) ────────────────────────────────
+
+// Load truck users from server and cache in state
+async function loadTruckUsersFromServer() {
+    try {
+        console.log('[Truck] Fetching /api/truck-users...');
+        const res = await fetch('/api/truck-users');
+        console.log('[Truck] Response status:', res.status);
+        if (!res.ok) {
+            console.error('[Truck] Failed to load truck users, status:', res.status);
+            return;
+        }
+        state.truckUsers = await res.json();
+        console.log('[Truck] Loaded truck users:', state.truckUsers);
+    } catch (err) {
+        console.error('[Truck] Error loading truck users:', err);
     }
 }
 
-function setTruckModeUsers(arr) {
-    localStorage.setItem('intracker_truck_users', JSON.stringify(arr));
-}
-
+// Check if user has truck mode enabled (uses cached list)
 function shouldUserSeeTruckMode() {
-    const enabledUsers = getTruckModeUsers();
-    return enabledUsers.includes(state.user.trim());
+    return state.truckUsers.some(u => u.username.toLowerCase() === state.user.trim().toLowerCase() && u.enabled);
 }
 
-function toggleTruckModeForUser(username, enabled) {
-    let users = getTruckModeUsers();
-    if (enabled) {
-        if (!users.includes(username)) users.push(username);
-    } else {
-        users = users.filter(u => u !== username);
+// Save truck users to server
+async function saveTruckUsersToServer(users) {
+    try {
+        console.log(`[Truck] POST /api/truck-users with ${users.length} users`);
+        const res = await fetch('/api/truck-users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(users)
+        });
+        
+        const data = await res.json();
+        if (res.ok) {
+            console.log(`[Truck] Save successful:`, data);
+            // Refresh cache
+            await loadTruckUsersFromServer();
+        } else {
+            console.error(`[Truck] Save failed with status ${res.status}:`, data);
+            showToast(`Failed to save truck users: ${data.error || 'Server error'}`);
+        }
+    } catch (err) {
+        console.error(`[Truck] Save error:`, err);
+        showToast(`Failed to save truck users: ${err.message}`);
     }
-    setTruckModeUsers(users);
 }
 
-// Load all unique users from transaction history (extracted on server)
-// For now, we'll populate this manually or via API call
+// Toggle truck mode for a specific user (update in server and cache)
+async function toggleTruckModeForUser(username, enabled) {
+    // Update cache optimistically
+    const existing = state.truckUsers.find(u => u.username.toLowerCase() === username.toLowerCase());
+    if (existing) {
+        existing.enabled = enabled;
+    } else {
+        state.truckUsers.push({ username, city_group: '', enabled });
+    }
+    
+    // Save to server
+    await saveTruckUsersToServer(state.truckUsers);
+}
+
+// Load all unique users from transaction history (fetches pre-computed list from server)
 async function loadAllUsers() {
     try {
-        const res = await fetch('/api/transactions');
-        const data = await res.json();
-        const userSet = new Set();
-        data.rows?.forEach(row => {
-            if (row.user && row.user.trim()) userSet.add(row.user.trim());
-        });
-        return Array.from(userSet).sort();
+        const res = await fetch('/api/unique-users');
+        const users = await res.json();
+        return users;
     } catch {
         return [];
     }
 }
 
-async function openTruckManagerModal() {
+// Render truck users list - called when opening modal or when toggle changes
+function renderTruckUsersList(allUsers, cityGroups, locationToCityGroup, currentLocationCity) {
     truckUsersList.innerHTML = '';
-    const allUsers = await loadAllUsers();
-    const enabledUsers = getTruckModeUsers();
     
-    if (allUsers.length === 0) {
-        truckManagerError.textContent = 'No users found in transaction history';
+    // Determine which users to show based on toggle
+    const showAll = truckShowAllUsers.checked;
+    let usersToShow = allUsers;
+    
+    if (!showAll) {
+        // Filter users based on city_group matching
+        usersToShow = allUsers.filter(user => {
+            const userCity = user.city_group || '';
+            
+            let included = false;
+            if (currentLocationCity) {
+                // If current location is in a city group, show:
+                // 1. Users without a city group assigned (empty string)
+                // 2. Users already assigned to this city group
+                const noAssignedCity = !userCity || userCity.trim() === '';
+                const assignedToThisCity = userCity === currentLocationCity;
+                included = noAssignedCity || assignedToThisCity;
+            } else {
+                // If location not in a city group, show all users without a city group assigned
+                const noAssignedCity = !userCity || userCity.trim() === '';
+                included = noAssignedCity;
+            }
+            return included;
+        });
+    }
+    
+    if (usersToShow.length === 0) {
+        if (showAll) {
+            truckManagerError.textContent = 'No users found';
+        } else if (currentLocationCity) {
+            truckManagerError.textContent = `No users available for city "${currentLocationCity}" (all users either need assignment or are already assigned to other cities)`;
+        } else {
+            truckManagerError.textContent = 'No users found without city group assignments (all users with city group locations are assigned)';
+        }
         truckManagerError.classList.remove('hidden');
         return;
     }
     
     const frag = document.createDocumentFragment();
-    allUsers.forEach(user => {
-        const label = document.createElement('label');
-        label.className = 'truck-user-item';
-        label.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px;cursor:pointer;';
+    usersToShow.forEach(userObj => {
+        const username = userObj.username;
+        const truckUser = state.truckUsers.find(u => u.username.toLowerCase() === username.toLowerCase());
+        const isEnabled = truckUser?.enabled || false;
+        const userCity = truckUser?.city_group || userObj.city_group || '';
+        
+        const container = document.createElement('div');
+        container.className = 'truck-user-item';
+        container.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid #ddd;';
         
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
-        checkbox.value = user;
-        checkbox.checked = enabledUsers.includes(user);
+        checkbox.value = username;
+        checkbox.checked = isEnabled;
         checkbox.className = 'truck-user-toggle';
         checkbox.addEventListener('change', (e) => {
-            toggleTruckModeForUser(user, e.target.checked);
+            toggleTruckModeForUser(username, e.target.checked);
         });
         
-        const span = document.createElement('span');
-        span.textContent = user;
+        const userSpan = document.createElement('span');
+        userSpan.textContent = username;
+        userSpan.style.cssText = 'min-width:100px;font-weight:500;';
         
-        label.appendChild(checkbox);
-        label.appendChild(span);
-        frag.appendChild(label);
+        const citySelect = document.createElement('select');
+        citySelect.style.cssText = 'padding:4px;';
+        citySelect.innerHTML = '<option value="">— Select City —</option>';
+        cityGroups.forEach(city => {
+            const opt = document.createElement('option');
+            opt.value = city;
+            opt.textContent = city;
+            if (city === userCity) opt.selected = true;
+            citySelect.appendChild(opt);
+        });
+        
+        citySelect.addEventListener('change', async (e) => {
+            const newCity = e.target.value;
+            console.log(`[Truck] Assigning ${username} to city: ${newCity}`);
+            
+            // Update city group for this user
+            if (truckUser) {
+                truckUser.city_group = newCity;
+                console.log(`[Truck] Updated existing user, enabled=${truckUser.enabled}`);
+            } else {
+                // New user - add with current enabled status
+                const newEntry = { username: username, city_group: newCity, enabled: isEnabled };
+                state.truckUsers.push(newEntry);
+                console.log(`[Truck] Added new user entry:`, newEntry);
+            }
+            
+            console.log(`[Truck] Saving ${state.truckUsers.length} users to server`);
+            await saveTruckUsersToServer(state.truckUsers);
+            console.log(`[Truck] Save complete, city assignment for ${username} should be "${newCity}"`);
+        });
+        
+        container.appendChild(checkbox);
+        container.appendChild(userSpan);
+        container.appendChild(citySelect);
+        frag.appendChild(container);
     });
     
     truckUsersList.appendChild(frag);
     truckManagerError.classList.add('hidden');
 }
+
+async function openTruckManagerModal() {
+    // Reset toggle
+    truckShowAllUsers.checked = false;
+    
+    // Load all unique users with their city_group assignments
+    let allUsers = await loadAllUsers();
+    console.log('[Truck Modal] allUsers loaded:', allUsers);
+    
+    // Always include current user, even if they have no transactions
+    if (state.user && state.user.trim()) {
+        const userSet = new Set(allUsers.map(u => u.username.toLowerCase()));
+        if (!userSet.has(state.user.trim().toLowerCase())) {
+            allUsers.push({ username: state.user.trim(), city_group: '' });
+        }
+        allUsers.sort((a, b) => a.username.localeCompare(b.username));
+        console.log('[Truck Modal] allUsers after adding current user:', allUsers);
+    }
+    
+    // Load city groups to determine location -> city group mapping
+    let cityGroups = [];
+    let locationToCityGroup = {}; // Map location -> city group name
+    try {
+        const res = await fetch('/api/city-groups');
+        if (res.ok) {
+            const groups = await res.json();
+            console.log('[Truck Modal] City groups loaded:', groups);
+            cityGroups = Object.keys(groups).sort();
+            Object.entries(groups).forEach(([cityName, locations]) => {
+                locations.forEach(loc => {
+                    locationToCityGroup[loc] = cityName;
+                });
+            });
+        }
+    } catch { /* silent fail */ }
+    
+    // Determine if current location is in a city group and get its city group name
+    const currentLocationCity = state.location ? locationToCityGroup[state.location] : null;
+    console.log('[Truck Modal] Current location:', state.location, '-> City group:', currentLocationCity);
+    
+    // Initial render
+    renderTruckUsersList(allUsers, cityGroups, locationToCityGroup, currentLocationCity);
+    
+    // Set up toggle listener
+    truckShowAllUsers.removeEventListener('change', truckShowAllUsersListener);
+    truckShowAllUsersListener = () => renderTruckUsersList(allUsers, cityGroups, locationToCityGroup, currentLocationCity);
+    truckShowAllUsers.addEventListener('change', truckShowAllUsersListener);
+}
+
+// Global listener reference for cleanup
+let truckShowAllUsersListener = null;
 
 function openObsoletePartsModal() {
     inputObsoletePn.value = '';
@@ -388,6 +554,72 @@ async function removeObsoletePart(pn) {
     }
 }
 
+// ─── Upload Truck Par Levels ──────────────────────────────────────────────────
+async function openUploadTruckParModal() {
+    inputTruckParCsv.value = '';
+    truckParError.classList.add('hidden');
+    truckParSuccess.style.display = 'none';
+    truckParPreview.style.display = 'none';
+    truckParCityGroups.innerHTML = '';
+    
+    // Load city groups
+    let cityGroups = {};
+    try {
+        const res = await fetch('/api/city-groups');
+        if (res.ok) {
+            cityGroups = await res.json();
+        }
+    } catch {
+        truckParError.textContent = 'Failed to load city groups';
+        truckParError.classList.remove('hidden');
+        return;
+    }
+    
+    // Render city group checkboxes
+    const cityNames = Object.keys(cityGroups).sort();
+    if (cityNames.length === 0) {
+        truckParCityGroups.innerHTML = '<p style="opacity: 0.7;">No city groups configured</p>';
+    } else {
+        const frag = document.createDocumentFragment();
+        
+        // Select All checkbox
+        const selectAllDiv = document.createElement('div');
+        selectAllDiv.style.cssText = 'margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border);';
+        const selectAllLabel = document.createElement('label');
+        selectAllLabel.style.cssText = 'display: flex; align-items: center; gap: 8px; cursor: pointer;';
+        const selectAllCb = document.createElement('input');
+        selectAllCb.type = 'checkbox';
+        selectAllCb.style.cursor = 'pointer';
+        selectAllCb.addEventListener('change', () => {
+            const allCbs = truckParCityGroups.querySelectorAll('input[type="checkbox"][data-city-group]');
+            allCbs.forEach(cb => { cb.checked = selectAllCb.checked; });
+        });
+        selectAllLabel.appendChild(selectAllCb);
+        selectAllLabel.appendChild(document.createTextNode('Select All'));
+        selectAllDiv.appendChild(selectAllLabel);
+        frag.appendChild(selectAllDiv);
+        
+        // Individual city group checkboxes
+        cityNames.forEach(city => {
+            const label = document.createElement('label');
+            label.style.cssText = 'display: flex; align-items: center; gap: 8px; cursor: pointer;';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.value = city;
+            cb.dataset.cityGroup = city;
+            cb.style.cursor = 'pointer';
+            label.appendChild(cb);
+            label.appendChild(document.createTextNode(city));
+            frag.appendChild(label);
+        });
+        
+        truckParCityGroups.appendChild(frag);
+    }
+    
+    // Show modal
+    modalUploadTruckPar.classList.remove('hidden');
+}
+
 // ─── User Name ────────────────────────────────────────────────────────────────
 function applyUserState() {
     const name = state.user.trim();
@@ -402,9 +634,15 @@ function applyUserState() {
         
         // Truck mode: only enable if user is in preference list
         const canUseTruckMode = shouldUserSeeTruckMode();
-        btnTruckStock.disabled = !canUseTruckMode;
-        btnTruckStock.style.opacity = canUseTruckMode ? '1' : '0.5';
-        btnTruckStock.title = canUseTruckMode ? 'Switch to Truck Transfer Mode' : 'Truck mode not enabled for your account';
+        if (canUseTruckMode) {
+            btnTruckStock.disabled = false;
+            btnTruckStock.style.display = 'inline-flex';
+            btnTruckStock.title = 'Switch to Truck Transfer Mode';
+        } else {
+            btnTruckStock.disabled = true;
+            btnTruckStock.style.display = 'none';
+            btnTruckStock.title = 'Truck mode not enabled for your account';
+        }
 
         btnUploadHistory.disabled = false;
         if (!state.location) {
@@ -419,6 +657,7 @@ function applyUserState() {
         btnManageLocations.disabled = true;
         btnTransactions.disabled = true;
         btnTruckStock.disabled = true;
+        btnTruckStock.style.display = 'none';
 
         btnUploadHistory.disabled = true;
         if (state.isTruckMode) {
@@ -426,6 +665,7 @@ function applyUserState() {
             state.locInventory = [];
             state.truckInventory = [];
             btnTruckStock.classList.remove('active');
+            truckModeBadge.classList.add('hidden');
         }
         state.truckLocation = '';
         removeDropdownTruck();
@@ -440,6 +680,7 @@ function applyUserState() {
 function handleUserInput() {
     state.user = inputUser.value;
     localStorage.setItem('intracker_user', state.user);
+    loadTruckUsersFromServer(); // Reload truck users (don't await, fire and forget)
     applyUserState();
     scheduleTruckDropdown();
 }
@@ -510,6 +751,18 @@ async function loadLocations() {
             opt.textContent = loc.replace(/_/g, ' ');
             selectLocation.appendChild(opt);
         });
+        
+        // Fetch truck location if user is enabled for truck mode
+        if (state.user.trim() && shouldUserSeeTruckMode() && !state.truckLocation) {
+            try {
+                const truckRes = await fetch(`/api/truck/${encodeURIComponent(state.user.trim())}`);
+                const truckData = await truckRes.json();
+                if (truckRes.ok) {
+                    state.truckLocation = truckData.location;
+                }
+            } catch { /* silent fail */ }
+        }
+        
         addTruckToDropdown();
         if (state.location) selectLocation.value = state.location;
     } catch (err) {
@@ -544,7 +797,8 @@ async function loadObsoleteList() {
 
 // ─── Truck Dropdown Helpers ───────────────────────────────────────────────────
 function addTruckToDropdown() {
-    if (!state.truckLocation || !state.isTruckMode) return;
+    // Show truck location if user is enabled for truck mode (regardless of current state)
+    if (!shouldUserSeeTruckMode() || !state.truckLocation) return;
     let opt = selectLocation.querySelector('option[data-truck]');
     if (!opt) {
         opt = document.createElement('option');
@@ -572,7 +826,6 @@ function scheduleTruckDropdown() {
             const data = await res.json();
             if (!res.ok) return;
             state.truckLocation = data.location;
-            addTruckToDropdown();
         } catch {}
     }, 600);
 }
@@ -584,6 +837,7 @@ function handleLocationChange() {
         state.locInventory = [];
         state.truckInventory = [];
         btnTruckStock.classList.remove('active');
+        truckModeBadge.classList.add('hidden');
     }
     state.location = selectLocation.value;
     if (state.location) {
@@ -702,6 +956,8 @@ function applyOrderVisibility() {
     btnUploadHistory.classList.toggle('hidden', state.hideOrder);
     const poBar = document.getElementById('po-action-bar');
     if (poBar) poBar.classList.toggle('hidden', state.hideOrder || state.isTruckMode);
+    // Hide Rec Parts button at truck locations
+    if (btnRecParts) btnRecParts.classList.toggle('hidden', state.location.startsWith('truck_'));
     const hdr = document.getElementById('parts-list-header');
     if (hdr) hdr.title = state.hideOrder ? '' : 'Click to rename this location';
 }
@@ -801,7 +1057,8 @@ function renderInventory(filter = '') {
         // Display par: -1 shows as "—", otherwise show the number (or — if 0 and not in truck mode)
         const parDisplay = parLevel === -1 ? '&mdash;' : 
                            (!state.isTruckMode && parLevel > 0) ? parLevel : '&mdash;';
-        const poMode = !state.hideOrder && !state.isTruckMode;
+        const isTruckLocation = state.location.startsWith('truck_');
+        const poMode = !state.hideOrder && !state.isTruckMode && !isTruckLocation;
         const parContent = poMode
             ? `<input class="par-edit-input" type="number" value="${parLevel}" min="-1" data-pn="${escapeAttr(item.part_number)}" aria-label="Par level for ${escapeAttr(item.part_number)}">`
             : `<span class="par-val">${parDisplay}</span>`;
@@ -1504,6 +1761,110 @@ inputRecPartsCsv.addEventListener('change', () => {
     });
 }
 
+inputTruckParCsv.addEventListener('change', () => {
+    const file = inputTruckParCsv.files[0];
+    if (!file) return;
+    
+    // Validate file extension
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+        truckParError.textContent = `Wrong file type: "${file.name}". Please upload a CSV file.`;
+        truckParError.classList.remove('hidden');
+        inputTruckParCsv.value = '';
+        return;
+    }
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const csv = e.target.result;
+        
+        // Parse and preview CSV
+        const lines = csv.trim().split('\n');
+        if (lines.length < 2) {
+            truckParError.textContent = 'CSV must have a header row and at least one data row';
+            truckParError.classList.remove('hidden');
+            inputTruckParCsv.value = '';
+            return;
+        }
+        
+        truckParError.classList.add('hidden');
+        
+        // Show preview
+        const previewLines = lines.slice(0, 6); // First 5 data rows + header
+        truckParPreviewContent.innerHTML = previewLines.map(line => escapeHtml(line)).join('<br>');
+        if (lines.length > 6) {
+            truckParPreviewContent.innerHTML += `<br><em>... and ${lines.length - 6} more rows</em>`;
+        }
+        truckParPreview.style.display = 'block';
+        
+        // Store CSV for upload
+        inputTruckParCsv.dataset.csvContent = csv;
+    };
+    reader.readAsText(file);
+});
+
+btnTruckParUpload.addEventListener('click', async () => {
+    const csv = inputTruckParCsv.dataset.csvContent;
+    if (!csv) {
+        truckParError.textContent = 'Please select a CSV file first';
+        truckParError.classList.remove('hidden');
+        return;
+    }
+    
+    // Get selected city groups
+    const selectedCbs = truckParCityGroups.querySelectorAll('input[type="checkbox"]:checked[data-city-group]');
+    const cityGroups = Array.from(selectedCbs).map(cb => cb.value);
+    
+    if (cityGroups.length === 0) {
+        truckParError.textContent = 'Please select at least one city group';
+        truckParError.classList.remove('hidden');
+        return;
+    }
+    
+    btnTruckParUpload.disabled = true;
+    truckParError.classList.add('hidden');
+    truckParSuccess.style.display = 'none';
+    
+    try {
+        const res = await fetch('/api/truck-par-levels/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ csv, cityGroups })
+        });
+        
+        const data = await res.json();
+        if (!res.ok) {
+            truckParError.textContent = data.error || 'Upload failed';
+            truckParError.classList.remove('hidden');
+            btnTruckParUpload.disabled = false;
+            return;
+        }
+        
+        // Show success message
+        const updatedLocs = Object.keys(data.updated).length;
+        const successMsg = `✓ Updated par levels for ${data.partsUpdated} part${data.partsUpdated === 1 ? '' : 's'} in ${updatedLocs} truck location${updatedLocs === 1 ? '' : 's'}`;
+        truckParSuccess.textContent = successMsg;
+        truckParSuccess.style.display = 'block';
+        
+        // Reset form
+        inputTruckParCsv.value = '';
+        inputTruckParCsv.dataset.csvContent = '';
+        truckParPreview.style.display = 'none';
+        
+        showToast(successMsg, 4000);
+        
+        // Close modal after 2 seconds
+        setTimeout(() => {
+            modalUploadTruckPar.classList.add('hidden');
+            btnTruckParUpload.disabled = false;
+        }, 2000);
+    } catch (err) {
+        console.error('Upload error:', err);
+        truckParError.textContent = 'Server error. Please try again.';
+        truckParError.classList.remove('hidden');
+        btnTruckParUpload.disabled = false;
+    }
+});
+
 // ─── Barcode Scanner ──────────────────────────────────────────────────────────
 let currentBarcodeItem = null;
 let barcodeModeIsAdd = true;  // true = ADD, false = SUBTRACT
@@ -1890,13 +2251,14 @@ btnTruckStock.addEventListener('click', async () => {
         state.locInventory = [];
         state.truckInventory = [];
         btnTruckStock.classList.remove('active');
+        truckModeBadge.classList.add('hidden');
         if (state.location) loadInventory();
         else { showView(viewSplash); splashText.textContent = 'Select a location to view inventory.'; }
         return;
     }
 
     if (!state.location) { showToast('Select a location first'); return; }
-    if (state.location === state.truckLocation) { showToast('Select a location (not your truck) to use transfer mode'); return; }
+    if (state.location.startsWith('truck_') || state.location === state.truckLocation) { showToast('Select a regular location (not your truck) to use transfer mode'); return; }
 
     btnTruckStock.disabled = true;
     try {
@@ -1907,9 +2269,12 @@ btnTruckStock.addEventListener('click', async () => {
         state.truckLocation = data.location;
         state.isTruckMode = true;
         btnTruckStock.classList.add('active');
+        truckModeBadge.classList.remove('hidden');
+        addTruckToDropdown();
         const locDisplay = state.location.replace(/_/g, ' ');
         $('truck-col-loc-name').textContent = locDisplay;
         $('truck-col-loc-header').textContent = locDisplay;
+        showToast('✓ Entered TRUCK MODE', 2000);
         await loadTruckView();
         if (data.created) showToast('Truck stock created for ' + state.user.trim());
     } catch {
@@ -2120,6 +2485,7 @@ $('btn-truck-done').addEventListener('click', () => {
     state.locInventory   = [];
     state.truckInventory = [];
     btnTruckStock.classList.remove('active');
+    truckModeBadge.classList.add('hidden');
     if (state.location) loadInventory();
     else { showView(viewSplash); splashText.textContent = 'Select a location to view inventory.'; }
 });
@@ -2196,6 +2562,7 @@ document.addEventListener('keydown', async e => {
                 state.locInventory = [];
                 state.truckInventory = [];
                 btnTruckStock.classList.remove('active');
+                truckModeBadge.classList.add('hidden');
                 if (state.location) loadInventory();
                 else { showView(viewSplash); splashText.textContent = 'Select a location to view inventory.'; }
             }
@@ -2290,6 +2657,19 @@ btnAdminTruckManager.addEventListener('click', () => {
 
 btnTruckManagerClose.addEventListener('click', () => {
     modalTruckManager.classList.add('hidden');
+});
+
+btnAdminUploadTruckPar.addEventListener('click', () => {
+    modalAdminChoice.classList.add('hidden');
+    openUploadTruckParModal();
+});
+
+btnTruckParCancel.addEventListener('click', () => {
+    modalUploadTruckPar.classList.add('hidden');
+    inputTruckParCsv.value = '';
+    truckParError.classList.add('hidden');
+    truckParSuccess.style.display = 'none';
+    truckParPreview.style.display = 'none';
 });
 
 btnAdminLocationInfo.addEventListener('click', () => {
@@ -3107,6 +3487,7 @@ function escapeAttr(str) {
     const saved = localStorage.getItem('intracker_user') || '';
     inputUser.value = saved;
     state.user = saved;
+    await loadTruckUsersFromServer(); // Load truck user list from server
     applyUserState();
     if (state.user.trim()) scheduleTruckDropdown();
 

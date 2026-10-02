@@ -23,6 +23,8 @@ const TRANSACTIONS_FILE = path.join(DATA_DIR, 'transactions.csv');
 const TRANSACTIONS_DIR  = path.join(DATA_DIR, 'transactions');
 const HIDDEN_FILE    = path.join(DATA_DIR, 'hidden_locations.json');
 const CITY_GROUPS_FILE = path.join(DATA_DIR, 'city_groups.json');
+const CITY_GROUP_TRUCK_PAR_FILE = path.join(DATA_DIR, 'city_group_truck_par_levels.json');
+const TRUCK_USERS_FILE = path.join(DATA_DIR, 'truck_users.csv');
 const OBSOLETE_FILE = path.join(DATA_DIR, 'obsolete.csv');
 const BACKUPS_DIR    = path.join(DATA_DIR, 'backups');
 const ORDERS_DIR     = path.join(DATA_DIR, 'orders');
@@ -1256,6 +1258,51 @@ app.get('/api/transactions', async (req, res) => {
     }
 });
 
+// GET /api/unique-users — returns array of unique users with their city_group assignments
+app.get('/api/unique-users', async (req, res) => {
+    try {
+        // Get all unique users from transactions
+        await ensureTransactionsFile();
+        const txText = await fsp.readFile(TRANSACTIONS_FILE, 'utf8');
+        const txRows = parseCSV(txText).rows;
+        
+        const userSet = new Set();
+        txRows.forEach(r => {
+            if (r.user && r.user.trim()) {
+                userSet.add(r.user.trim());
+            }
+        });
+        
+        // Get truck user assignments (city_group, enabled status)
+        let truckUsers = {};
+        try {
+            const tuText = await fsp.readFile(TRUCK_USERS_FILE, 'utf8');
+            const tuLines = tuText.trim().split('\n');
+            if (tuLines.length > 1) {
+                const headers = tuLines[0].split(',').map(h => h.trim());
+                tuLines.slice(1).forEach(line => {
+                    const values = line.split(',').map(v => v.trim());
+                    const username = values[0];
+                    const cityGroup = values[1] || '';
+                    truckUsers[username] = { city_group: cityGroup };
+                });
+            }
+        } catch {
+            // File doesn't exist yet, that's fine
+        }
+        
+        // Build result: each user with their city_group
+        const result = Array.from(userSet).map(username => ({
+            username: username,
+            city_group: truckUsers[username]?.city_group || ''
+        })).sort((a, b) => a.username.localeCompare(b.username));
+        
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // ─── API: Orders ─────────────────────────────────────────────────────────────
 
 // GET /api/orders?location= — returns { part_number: qty_on_order } map for a location
@@ -1767,6 +1814,399 @@ app.put('/api/city-groups', async (req, res) => {
         }
         await fsp.writeFile(CITY_GROUPS_FILE, JSON.stringify(groups, null, 2), 'utf8');
         res.json(groups);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ─── API: Truck Users ────────────────────────────────────────────────────────
+
+// GET /api/truck-users — get all truck users (admin view)
+app.get('/api/truck-users', async (req, res) => {
+    try {
+        const text = await fsp.readFile(TRUCK_USERS_FILE, 'utf8');
+        const lines = text.trim().split('\n');
+        if (lines.length < 1) return res.json([]);
+        
+        const headers = lines[0].split(',').map(h => h.trim());
+        const users = lines.slice(1).map(line => {
+            const values = line.split(',').map(v => v.trim());
+            return {
+                username: values[0],
+                city_group: values[1] || '',
+                enabled: values[2] === 'true' || values[2] === '1' || values[2] === 'yes'
+            };
+        }).filter(u => u.username);
+        
+        // Deduplicate by username (keep last occurrence)
+        const userMap = {};
+        for (const user of users) {
+            userMap[user.username.toLowerCase()] = user;
+        }
+        const deduplicatedUsers = Object.values(userMap);
+        
+        res.json(deduplicatedUsers);
+    } catch (err) {
+        if (err.code === 'ENOENT') return res.json([]);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Helper: Apply city group par level template to a truck (clears existing, then applies new)
+async function applyTruckParLevelTemplate(username, cityGroup) {
+    if (!username || !cityGroup) return;
+    
+    try {
+        // Load templates
+        let templates = {};
+        try {
+            const templatesText = await fsp.readFile(CITY_GROUP_TRUCK_PAR_FILE, 'utf8');
+            templates = JSON.parse(templatesText);
+        } catch {
+            // No templates file yet
+            return;
+        }
+        
+        const template = templates[cityGroup];
+        if (!template || Object.keys(template).length === 0) {
+            console.log(`[Truck] No par level template for city group: ${cityGroup}`);
+            return;
+        }
+        
+        // Find truck file for this user
+        const normalizedUser = username.toLowerCase().replace(/[\s_]+/g, '_');
+        const truckFilename = `truck_${username.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        const truckFile = path.join(LOCATIONS_DIR, `${truckFilename}.csv`);
+        
+        // Load truck CSV
+        let truckText = '';
+        let created = false;
+        try {
+            truckText = await fsp.readFile(truckFile, 'utf8');
+        } catch {
+            // Truck file doesn't exist yet - will be created with ONLY template parts
+            truckText = 'part_number,quantity,par_level,aisle,rack,shelf\n';
+            created = true;
+        }
+        
+        const { headers, rows } = parseCSV(truckText);
+        
+        // Ensure par_level column exists
+        if (!headers.includes('par_level')) {
+            headers.push('par_level');
+        }
+        
+        // Apply template: parts in template get their value, parts not in template get 0
+        const templatePartNumbers = Object.keys(template);
+        let updated = 0;
+        
+        // First, handle existing rows
+        for (const row of rows) {
+            const pn = row.part_number;
+            if (templatePartNumbers.includes(pn)) {
+                // Part is in template - set par level from template
+                row.par_level = template[pn];
+                updated++;
+            } else {
+                // Part not in template - set par level to 0
+                row.par_level = 0;
+                updated++;
+            }
+        }
+        
+        // If file was just created (empty), add rows for all template parts
+        if (created && rows.length === 0) {
+            for (const pn of templatePartNumbers) {
+                rows.push({ 
+                    part_number: pn, 
+                    quantity: 0, 
+                    par_level: template[pn],
+                    aisle: '',
+                    rack: '',
+                    shelf: ''
+                });
+                updated++;
+            }
+            console.log(`[Truck] New truck file created with ${templatePartNumbers.length} parts from template`);
+        }
+        
+        await fsp.writeFile(truckFile, rowsToCSV(headers, rows), 'utf8');
+        console.log(`[Truck] Applied template "${cityGroup}" to ${username}'s truck (${updated} parts updated)`);
+    } catch (err) {
+        console.error(`[Truck] Error applying template to ${username}'s truck:`, err.message);
+    }
+}
+
+// POST /api/truck-users — update truck users list (admin only, already protected by password)
+app.post('/api/truck-users', express.json(), async (req, res) => {
+    try {
+        const users = req.body; // Array of {username, city_group, enabled}
+        if (!Array.isArray(users)) {
+            return res.status(400).json({ error: 'Expected an array of truck users' });
+        }
+        
+        console.log(`[Truck] POST /api/truck-users: Saving ${users.length} users`);
+        users.forEach((u, i) => console.log(`  [${i}] ${u.username} | city: ${u.city_group} | enabled: ${u.enabled}`));
+        
+        // Load existing truck users to detect city_group changes
+        let existingUsers = {};
+        try {
+            const existingText = await fsp.readFile(TRUCK_USERS_FILE, 'utf8');
+            const lines = existingText.trim().split('\n');
+            for (let i = 1; i < lines.length; i++) {
+                const values = lines[i].split(',').map(v => v.trim());
+                if (values[0]) {
+                    existingUsers[values[0].toLowerCase()] = values[1] || '';
+                }
+            }
+        } catch {
+            // File doesn't exist yet
+        }
+        
+        // Deduplicate users by username (keep last occurrence for each username)
+        const userMap = {};
+        for (const user of users) {
+            const username = (user.username || '').trim();
+            if (username) {
+                userMap[username] = user;
+            }
+        }
+        const deduplicatedUsers = Object.values(userMap);
+        console.log(`[Truck] Deduplicated ${users.length} users to ${deduplicatedUsers.length} unique users`);
+        
+        let csvContent = 'username,city_group,enabled\n';
+        deduplicatedUsers.forEach(user => {
+            const username = (user.username || '').trim();
+            const city = (user.city_group || '').trim();
+            const enabled = user.enabled ? 'true' : 'false';
+            if (username) {
+                csvContent += `${username},${city},${enabled}\n`;
+            }
+        });
+        
+        console.log(`[Truck] Writing CSV (${csvContent.length} bytes):`);
+        console.log(csvContent);
+        
+        await fsp.writeFile(TRUCK_USERS_FILE, csvContent, 'utf8');
+        console.log(`[Truck] File written successfully`);
+        
+        // Apply templates for any trucks whose city_group changed (using deduplicated users)
+        console.log(`[Truck] Checking city_group changes. existingUsers:`, existingUsers);
+        for (const user of deduplicatedUsers) {
+            const username = user.username.toLowerCase();
+            const oldCity = existingUsers[username] || '';
+            const newCity = (user.city_group || '').trim();
+            
+            console.log(`[Truck] Change detection for ${user.username}: oldCity="${oldCity}" newCity="${newCity}"`);
+            
+            if (oldCity !== newCity && newCity) {
+                console.log(`[Truck] City group changed for ${user.username}: "${oldCity}" → "${newCity}"`);
+                await applyTruckParLevelTemplate(user.username, newCity);
+            }
+        }
+        
+        res.json({ success: true, updated: deduplicatedUsers.length });
+    } catch (err) {
+        console.error(`[Truck] ERROR in POST /api/truck-users:`, err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/truck-users/:username — check if specific user has truck mode enabled
+app.get('/api/truck-users/:username', async (req, res) => {
+    try {
+        const username = decodeURIComponent(req.params.username).trim();
+        if (!username) return res.status(400).json({ error: 'Username required' });
+        
+        const text = await fsp.readFile(TRUCK_USERS_FILE, 'utf8');
+        const lines = text.trim().split('\n');
+        
+        for (let i = 1; i < lines.length; i++) {
+            const values = lines[i].split(',').map(v => v.trim());
+            if (values[0].toLowerCase() === username.toLowerCase()) {
+                const enabled = values[2] === 'true' || values[2] === '1' || values[2] === 'yes';
+                return res.json({ 
+                    username: values[0], 
+                    city_group: values[1] || '',
+                    enabled 
+                });
+            }
+        }
+        
+        // User not found
+        res.json({ username, city_group: '', enabled: false });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/truck-par-levels/upload — upload par levels for truck locations in city groups
+app.post('/api/truck-par-levels/upload', async (req, res) => {
+    try {
+        const { csv, cityGroups } = req.body;
+        if (!csv || typeof csv !== 'string') return res.status(400).json({ error: 'CSV content required' });
+        if (!Array.isArray(cityGroups) || cityGroups.length === 0) return res.status(400).json({ error: 'At least one city group required' });
+        
+        // Parse CSV to extract part_number and par_level columns
+        const lines = csv.trim().split('\n');
+        if (lines.length < 2) return res.status(400).json({ error: 'CSV must have header and at least one data row' });
+        
+        const header = lines[0].split(',').map(h => h.trim().toLowerCase());
+        const pnIdx = header.findIndex(h => /part.?num|part.?no|partno|\bpn\b/i.test(h));
+        const parIdx = header.findIndex(h => /par.?level|parlevel/i.test(h));
+        
+        if (pnIdx === -1) return res.status(400).json({ error: 'Column "part_number" not found in CSV' });
+        if (parIdx === -1) return res.status(400).json({ error: 'Column "par_level" not found in CSV' });
+        
+        const parMap = {};
+        for (let i = 1; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (!line) continue;
+            const parts = line.split(',').map(p => p.trim());
+            const pn = parts[pnIdx];
+            const par = parts[parIdx];
+            if (pn && par) {
+                const parNum = parseInt(par, 10);
+                if (!isNaN(parNum)) {
+                    parMap[pn] = parNum;
+                }
+            }
+        }
+        
+        if (Object.keys(parMap).length === 0) return res.status(400).json({ error: 'No valid part numbers with par levels found in CSV' });
+        
+        // Load city groups to check if "all" are selected
+        let allCityGroups = [];
+        try {
+            const cgText = await fsp.readFile(CITY_GROUPS_FILE, 'utf8');
+            const cgData = JSON.parse(cgText);
+            allCityGroups = Object.keys(cgData);
+        } catch {
+            // City groups file might not exist yet
+        }
+        
+        // Check if all city groups are selected (include unassigned trucks only if all are selected)
+        const includeUnassignedTrucks = allCityGroups.length === 0 || cityGroups.length === allCityGroups.length;
+        console.log(`[Truck Par Upload] All city groups: ${allCityGroups.join(', ') || '(none)'}`);
+        console.log(`[Truck Par Upload] Include unassigned trucks: ${includeUnassignedTrucks}`);
+        
+        // Load truck users to match username → city_group
+        // Normalize usernames: lowercase and replace spaces/underscores for consistent matching
+        let truckUsersMap = {}; // normalized_username -> city_group
+        try {
+            const tuText = await fsp.readFile(TRUCK_USERS_FILE, 'utf8');
+            const tuLines = tuText.trim().split('\n');
+            for (let i = 1; i < tuLines.length; i++) {
+                const values = tuLines[i].split(',').map(v => v.trim());
+                if (values[0]) {
+                    const normalizedUser = values[0].toLowerCase().replace(/[\s_]+/g, '_');
+                    truckUsersMap[normalizedUser] = values[1] || '';
+                }
+            }
+        } catch {
+            // Truck users file might not exist yet
+        }
+        
+        // Find all truck_*.csv files in locations directory and match to selected city groups
+        const truckLocations = [];
+        try {
+            const files = await fsp.readdir(LOCATIONS_DIR);
+            console.log(`[Truck Par Upload] Scanning ${files.length} files in locations directory`);
+            console.log(`[Truck Par Upload] truckUsersMap:`, truckUsersMap);
+            console.log(`[Truck Par Upload] Selected city groups:`, cityGroups);
+            
+            for (const file of files) {
+                if (file.toLowerCase().startsWith('truck_') && file.toLowerCase().endsWith('.csv')) {
+                    // Extract username from filename: truck_username.csv
+                    const filename = file.slice(0, -4); // Remove .csv
+                    const username = filename.slice(6); // Remove "truck_" prefix
+                    const normalizedUser = username.toLowerCase().replace(/[\s_]+/g, '_');
+                    
+                    // Get city_group for this user
+                    const userCityGroup = truckUsersMap[normalizedUser] || '';
+                    
+                    console.log(`[Truck Par Upload] Found truck: ${filename} → username: ${username} → normalized: ${normalizedUser} → city_group: ${userCityGroup || '(unassigned)'}`);
+                    
+                    // Include truck if:
+                    // 1. Its city_group is in selected list, OR
+                    // 2. Its city_group is empty AND all city groups are selected (unassigned applies only to "all")
+                    if (cityGroups.includes(userCityGroup) || (userCityGroup === '' && includeUnassignedTrucks)) {
+                        console.log(`[Truck Par Upload]   ✓ INCLUDED`);
+                        truckLocations.push(filename);
+                    } else {
+                        console.log(`[Truck Par Upload]   ✗ EXCLUDED`);
+                    }
+                }
+            }
+        } catch (err) {
+            return res.status(500).json({ error: `Failed to scan truck locations: ${err.message}` });
+        }
+        
+        console.log(`[Truck Par Upload] Total trucks to update: ${truckLocations.length}`, truckLocations);
+        if (truckLocations.length === 0) return res.status(400).json({ error: 'No truck locations found in selected city groups' });
+        
+        // Update par_level in each truck location CSV
+        const updated = {};
+        for (const locName of truckLocations) {
+            const locFile = path.join(LOCATIONS_DIR, `${locName}.csv`);
+            try {
+                const locText = await fsp.readFile(locFile, 'utf8');
+                const { headers, rows } = parseCSV(locText);
+                
+                // Ensure par_level column exists
+                if (!headers.includes('par_level')) {
+                    headers.push('par_level');
+                }
+                
+                // Update par levels
+                let count = 0;
+                for (const pn of Object.keys(parMap)) {
+                    const idx = rows.findIndex(r => r.part_number === pn);
+                    if (idx === -1) {
+                        // Add new part with par level
+                        rows.push({ part_number: pn, quantity: 0, par_level: parMap[pn] });
+                    } else if (rows[idx].par_level !== String(parMap[pn])) {
+                        rows[idx].par_level = parMap[pn];
+                    }
+                    count++;
+                }
+                
+                // Write updated file
+                await fsp.writeFile(locFile, rowsToCSV(headers, rows), 'utf8');
+                updated[locName] = count;
+            } catch (err) {
+                console.error(`Error updating truck location ${locName}:`, err.message);
+            }
+        }
+        
+        // Save par level templates for each selected city group
+        try {
+            let templates = {};
+            try {
+                const templatesText = await fsp.readFile(CITY_GROUP_TRUCK_PAR_FILE, 'utf8');
+                templates = JSON.parse(templatesText);
+            } catch {
+                // File doesn't exist yet, start with empty object
+            }
+            
+            // Update template for each selected city group
+            for (const cityGroup of cityGroups) {
+                templates[cityGroup] = parMap;
+            }
+            
+            await fsp.writeFile(CITY_GROUP_TRUCK_PAR_FILE, JSON.stringify(templates, null, 2), 'utf8');
+            console.log(`[Truck Par Upload] Saved templates for city groups: ${cityGroups.join(', ')}`);
+        } catch (err) {
+            console.error(`[Truck Par Upload] Warning: Failed to save templates:`, err.message);
+            // Don't fail the entire request if template save fails
+        }
+        
+        res.json({ 
+            success: true, 
+            updated, 
+            totalLocations: truckLocations.length,
+            partsUpdated: Object.keys(parMap).length
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
