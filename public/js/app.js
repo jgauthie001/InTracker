@@ -444,6 +444,10 @@ async function openTruckManagerModal() {
     // Reset toggle
     truckShowAllUsers.checked = false;
     
+    // IMPORTANT: Refresh truck users from server BEFORE rendering
+    // This ensures we show the latest saved state, not stale in-memory data
+    await loadTruckUsersFromServer();
+    
     // Load all unique users with their city_group assignments
     let allUsers = await loadAllUsers();
     console.log('[Truck Modal] allUsers loaded:', allUsers);
@@ -2654,9 +2658,9 @@ btnAdminCityGroups.addEventListener('click', () => {
     openCityGroupsModal();
 });
 
-btnAdminTruckManager.addEventListener('click', () => {
+btnAdminTruckManager.addEventListener('click', async () => {
     modalAdminChoice.classList.add('hidden');
-    openTruckManagerModal();
+    await openTruckManagerModal();
     modalTruckManager.classList.remove('hidden');
 });
 

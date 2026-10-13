@@ -1821,6 +1821,49 @@ app.put('/api/city-groups', async (req, res) => {
 
 // ─── API: Truck Users ────────────────────────────────────────────────────────
 
+// Helper: Properly escape CSV field values (quote if contains comma, quote, or newline)
+function escapeCSVField(value) {
+    if (!value) return '""';
+    const str = String(value);
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        // Escape quotes by doubling them, then wrap in quotes
+        return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+}
+
+// Helper: Parse a CSV line handling quoted fields
+function parseCSVLine(line) {
+    const result = [];
+    let current = '';
+    let inQuotes = false;
+    
+    for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        const nextChar = line[i + 1];
+        
+        if (char === '"') {
+            if (inQuotes && nextChar === '"') {
+                // Escaped quote
+                current += '"';
+                i++;
+            } else {
+                // Toggle quote mode
+                inQuotes = !inQuotes;
+            }
+        } else if (char === ',' && !inQuotes) {
+            // Field separator
+            result.push(current.trim());
+            current = '';
+        } else {
+            current += char;
+        }
+    }
+    
+    result.push(current.trim());
+    return result;
+}
+
 // GET /api/truck-users — get all truck users (admin view)
 app.get('/api/truck-users', async (req, res) => {
     try {
@@ -1828,11 +1871,10 @@ app.get('/api/truck-users', async (req, res) => {
         const lines = text.trim().split('\n');
         if (lines.length < 1) return res.json([]);
         
-        const headers = lines[0].split(',').map(h => h.trim());
         const users = lines.slice(1).map(line => {
-            const values = line.split(',').map(v => v.trim());
+            const values = parseCSVLine(line);
             return {
-                username: values[0],
+                username: values[0] || '',
                 city_group: values[1] || '',
                 enabled: values[2] === 'true' || values[2] === '1' || values[2] === 'yes'
             };
@@ -1954,7 +1996,7 @@ app.post('/api/truck-users', express.json(), async (req, res) => {
             const existingText = await fsp.readFile(TRUCK_USERS_FILE, 'utf8');
             const lines = existingText.trim().split('\n');
             for (let i = 1; i < lines.length; i++) {
-                const values = lines[i].split(',').map(v => v.trim());
+                const values = parseCSVLine(lines[i]);
                 if (values[0]) {
                     existingUsers[values[0].toLowerCase()] = values[1] || '';
                 }
@@ -1980,7 +2022,8 @@ app.post('/api/truck-users', express.json(), async (req, res) => {
             const city = (user.city_group || '').trim();
             const enabled = user.enabled ? 'true' : 'false';
             if (username) {
-                csvContent += `${username},${city},${enabled}\n`;
+                // Use escapeCSVField to properly handle commas in names
+                csvContent += `${escapeCSVField(username)},${escapeCSVField(city)},${escapeCSVField(enabled)}\n`;
             }
         });
         
@@ -2022,8 +2065,8 @@ app.get('/api/truck-users/:username', async (req, res) => {
         const lines = text.trim().split('\n');
         
         for (let i = 1; i < lines.length; i++) {
-            const values = lines[i].split(',').map(v => v.trim());
-            if (values[0].toLowerCase() === username.toLowerCase()) {
+            const values = parseCSVLine(lines[i]);
+            if (values[0] && values[0].toLowerCase() === username.toLowerCase()) {
                 const enabled = values[2] === 'true' || values[2] === '1' || values[2] === 'yes';
                 return res.json({ 
                     username: values[0], 
