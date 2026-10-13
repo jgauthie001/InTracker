@@ -295,6 +295,7 @@ async function saveTruckUsersToServer(users) {
             console.log(`[Truck] Save successful:`, data);
             // Refresh cache
             await loadTruckUsersFromServer();
+            showToast('Truck mode settings saved');
         } else {
             console.error(`[Truck] Save failed with status ${res.status}:`, data);
             showToast(`Failed to save truck users: ${data.error || 'Server error'}`);
@@ -388,8 +389,10 @@ function renderTruckUsersList(allUsers, cityGroups, locationToCityGroup, current
         checkbox.value = username;
         checkbox.checked = isEnabled;
         checkbox.className = 'truck-user-toggle';
-        checkbox.addEventListener('change', (e) => {
-            toggleTruckModeForUser(username, e.target.checked);
+        checkbox.addEventListener('change', async (e) => {
+            checkbox.disabled = true;  // Disable during save
+            await toggleTruckModeForUser(username, e.target.checked);
+            checkbox.disabled = false;  // Re-enable after save
         });
         
         const userSpan = document.createElement('span');
